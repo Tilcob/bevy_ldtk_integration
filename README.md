@@ -12,9 +12,11 @@ Ein fokussiertes Bevy-Plugin zum Laden von LDtk-Maps in Spielen. Das Rendering u
 - Registriert LDtk Entities per Bundle oder eigener Spawner-Funktion
 - Erfasst IntGrid Collision mit konfigurierbaren Regeln pro Layer und Wert
 - Unterstuetzt Layer-Filter fuer Katalog/Spiel-Import
-- Fuehrt Load-State und Validation-Report als Ressourcen
-- Katalogisiert ausgelagerte `.ldtkl` Level-Dateien aus dem Asset-Ordner
+- Fuehrt Load-State und Validation-Report als Ressourcen (optional strict)
+- Katalogisiert ausgelagerte `.ldtkl` Level-Dateien aus dem Asset-Ordner (Desktop-Only)
 - Liest Tile-Animations-Metadaten aus LDtk Tile Custom Data
+- Bietet einen optionalen LevelManager mit Transition-API, Spawnpoint-Logik und Cleanup
+- Liefert `LdtkCollisionReadyEvent` fuer Physics-Adapter ohne harte Abhaengigkeit
 
 ## Installation als Dependency
 
@@ -30,6 +32,13 @@ Oder per Git:
 ```toml
 [dependencies]
 ldtk_integration = { git = "https://github.com/<user>/<repo>.git" }
+```
+
+Tilemap-Adapter optional deaktivieren:
+
+```toml
+[dependencies]
+ldtk_integration = { path = "../ldtk_integration", default-features = false }
 ```
 
 Die Bevy-Version muss zur Dependency passen:
@@ -80,7 +89,59 @@ fn change_level(mut commands: Commands) {
 }
 ```
 
+## Level Manager
+
+Der LevelManager ist ein separates Plugin und kann optional zugeschaltet werden:
+
+```rust
+use bevy::prelude::*;
+use ldtk_integration::{GameLdtkPlugin, LevelManagerPlugin};
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(GameLdtkPlugin::default())
+        .add_plugins(LevelManagerPlugin)
+        .run();
+}
+```
+
+Levelwechsel mit Spawnpoint:
+
+```rust
+use bevy::prelude::*;
+use ldtk_integration::LdtkCommandExt;
+
+fn transition_level(mut commands: Commands) {
+    commands.transition_to_ldtk_level("Level_1", Some("Spawn_A"));
+}
+```
+
+Spawnpoint-Konventionen:
+
+- Wenn `spawn_id` gesetzt ist, wird der Spawnpoint mit Identifier oder Tag gefunden.
+- Ohne `spawn_id` wird zuerst ein Spawnpoint mit Identifier/Tag `PlayerSpawn` verwendet.
+- Fallback: erster Spawnpoint des Levels.
+- Wenn kein Spawnpoint existiert, wird ein Warnhinweis im `LdtkValidationReport` gesetzt und die Transition markiert als `Failed`.
+- Optional: `LdtkLevelManagerConfig { allow_missing_spawnpoints: true }` erlaubt einen Fallback auf `(0, 0)`.
+
+Player-Positionierung:
+
+- Markiere deine Spieler-Entity mit `LdtkLevelPlayer` oder setze `LdtkPlayerLocator { entity: Some(player) }`.
+- Beim erfolgreichen Transition-Finish wird der Spieler auf den Spawnpoint gesetzt.
+
+Persistenz und Cleanup:
+
+- Entities mit `LdtkPersistent` werden beim Levelwechsel nicht entfernt.
+- LDtk-Entities tragen automatisch `LdtkEntityMarker`, sind aber **nicht** persistent (opt-in).
+- Eigene Entities koennen mit `LdtkLevelScoped { level_identifier }` fuer Cleanup markiert werden.
+
 ## Entity-Registrierung
+
+Einfluss auf Persistenz:
+
+- Standard: der Entity-Spawn aus LDtk erzeugt **keinen** `LdtkPersistent` Marker.
+- Opt-in: setze `LdtkPersistent` im Spawner/Bundle, wenn die Entity Level-uebergreifend bleiben soll.
 
 Einfache Registrierung per Bundle:
 
@@ -109,7 +170,7 @@ Flexible Registrierung per Spawner:
 
 ```rust
 use bevy::prelude::*;
-use ldtk_integration::{LdtkAppExt, LdtkEntitySpawnContext};
+use ldtk_integration::{LdtkAppExt, LdtkEntitySpawnContext, LdtkPersistent};
 
 #[derive(Component)]
 struct Door {
@@ -124,7 +185,7 @@ fn register_entities(app: &mut App) {
             let target = context.field_str("target").unwrap_or_default().to_string();
             let locked = context.field_bool("locked").unwrap_or(false);
 
-            world.entity_mut(entity).insert(Door { target, locked });
+            world.entity_mut(entity).insert((Door { target, locked }, LdtkPersistent));
         },
     );
 }
@@ -149,6 +210,8 @@ app.add_plugins(GameLdtkPlugin::new(config));
 ```
 
 Collision-Daten stehen in `LdtkCollisionCatalog`. Entities mit passender IntGrid-Zelle bekommen `LdtkCollider`.
+
+Physics-Adapter koennen auf `LdtkCollisionReadyEvent` reagieren und die Daten aus `LdtkCollisionCatalog` nutzen.
 
 ## Load-State und Validierung
 
@@ -176,7 +239,9 @@ Validierung warnt unter anderem bei:
 - externen `.ldtkl` Levels, deren Layerdaten nicht katalogisiert werden konnten
 - Tileset-Referenzen ohne relativen Pfad
 
-Externe `.ldtkl` Dateien werden fuer den Metadaten-Katalog relativ zum geladenen `.ldtk` unterhalb von `LdtkConfig::asset_root` gelesen. Das eigentliche Rendering/Spawning bleibt weiterhin Aufgabe von `bevy_ecs_ldtk`.
+`LdtkConfig::with_strict_validation()` stuft die oben genannten Punkte als Fehler ein und setzt `LdtkLoadState` auf `Error`.
+
+Externe `.ldtkl` Dateien werden fuer den Metadaten-Katalog relativ zum geladenen `.ldtk` unterhalb von `LdtkConfig::asset_root` gelesen. Auf `wasm32` wird dieser Schritt bewusst uebersprungen (Warnung im Validation-Report). Das eigentliche Rendering/Spawning bleibt weiterhin Aufgabe von `bevy_ecs_ldtk`.
 
 ## Tile-Animationen
 
@@ -192,7 +257,12 @@ Gefundene Animationen stehen in:
 - `LdtkMapCatalog::tile_animations`
 - `LdtkTileMetadata::animation`
 
-Das Plugin fuehrt ausserdem `LdtkTileAnimator` als generischen Timer-Component mit. Die sichtbare Anwendung auf Sprite- oder Tilemap-Atlas-Indizes sollte im Spiel oder in einem spaeteren Renderer-Adapter erfolgen, weil `bevy_ecs_ldtk` die Tilemaps intern spawnt.
+Der LevelManager enthaelt einen **experimentellen** Adapter, der fuer Tilemap-Entities mit `TileTextureIndex` die Animationen aktualisiert. Aktivierung:
+
+- Feature `tilemap` (default an)
+- `LdtkLevelManagerConfig { enable_tile_animation_adapter: true }`
+
+Wenn die `bevy_ecs_tilemap`-Komponenten nicht vorhanden sind oder das Layout nicht passt, passiert nichts.
 
 ## Layer-Filter
 
@@ -227,4 +297,4 @@ cargo check
 cargo test
 ```
 
-Aktuell decken Unit-Tests Field-Helper, Layer-Filter, Tile-Animationsparser, Tile-ID-Berechnung und Collision-Regeln ab.
+Aktuell decken Unit-Tests Field-Helper, Layer-Filter, Tile-Animationsparser, Tile-ID-Berechnung, Collision-Regeln sowie Spawnpoint/Transition-Logik ab. Ein Integrationstest laedt eine echte LDtk-Datei und prueft LoadState, Kataloge und Collision-Daten.

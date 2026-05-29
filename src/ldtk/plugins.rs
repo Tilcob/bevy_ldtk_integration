@@ -53,18 +53,32 @@ impl Plugin for GameLdtkPlugin {
             .add_message::<LdtkWorldUnloadedEvent>()
             .add_message::<LdtkValidationFinishedEvent>()
             .add_plugins(bevy_ecs_ldtk::LdtkPlugin)
+            .configure_sets(
+                Update,
+                (
+                    LdtkLoadSet::Commands,
+                    LdtkLoadSet::Catalog,
+                    LdtkLoadSet::Capture,
+                    LdtkLoadSet::LevelTransitions,
+                    LdtkLoadSet::Animation,
+                )
+                    .chain(),
+            )
             .add_systems(Startup, spawn_configured_world)
             .add_systems(
                 Update,
                 (
-                    process_ldtk_commands,
-                    refresh_map_catalog_from_project,
-                    sync_level_lifecycle_events,
-                    capture_collision_data,
-                    capture_entity_instances,
-                    register_marked_entities,
-                    apply_registered_entity_behaviors,
-                    tick_ldtk_tile_animators,
+                    process_ldtk_commands.in_set(LdtkLoadSet::Commands),
+                    refresh_map_catalog_from_project.in_set(LdtkLoadSet::Catalog),
+                    sync_level_lifecycle_events.in_set(LdtkLoadSet::Catalog),
+                    (
+                        capture_collision_data,
+                        capture_entity_instances,
+                        apply_registered_entity_behaviors,
+                    )
+                        .chain()
+                        .in_set(LdtkLoadSet::Capture),
+                    tick_ldtk_tile_animators.in_set(LdtkLoadSet::Animation),
                 ),
             );
     }
@@ -184,6 +198,13 @@ fn refresh_map_catalog_from_project(
     let Some(project) = project_assets.get(&handle.handle) else {
         return;
     };
+
+    // The catalog is a pure projection of the loaded LdtkProject asset.
+    // Only rebuild it when the asset collection actually changed (initial
+    // load or reload); otherwise we would clear and repopulate every frame.
+    if !project_assets.is_changed() && !catalog.is_empty() {
+        return;
+    }
 
     let json = project.json_data();
     let active_world_path = runtime.active_world_path.clone().unwrap_or_default();
@@ -358,6 +379,16 @@ fn insert_level(
     catalog.levels.insert(info.identifier.clone(), info);
 }
 
+#[cfg(target_arch = "wasm32")]
+fn level_with_external_data(
+    _level: &Level,
+    _active_world_path: &str,
+    _config: &LdtkConfig,
+) -> Option<Level> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn level_with_external_data(
     level: &Level,
     active_world_path: &str,
@@ -435,69 +466,6 @@ fn update_load_stats(catalog: &LdtkMapCatalog, load_state: &mut LdtkLoadState) {
         collision_cells: 0,
         tile_animations: catalog.tile_animations.len(),
     };
-}
-
-fn validate_catalog(
-    catalog: &LdtkMapCatalog,
-    registry: &LdtkEntityRegistry,
-    config: &LdtkConfig,
-    report: &mut LdtkValidationReport,
-) {
-    report.clear();
-
-    for level in catalog.levels.values() {
-        if level.external_path.is_some() && level.tiles.is_empty() && level.entities.is_empty() {
-            report.warnings.push(LdtkValidationIssue::warning(
-                "external_level_not_cataloged",
-                format!(
-                    "Level '{}' references an external .ldtkl file. bevy_ecs_ldtk can load it, but this metadata catalog only sees embedded layer data.",
-                    level.identifier
-                ),
-            ));
-        }
-
-        if level.spawn_points.is_empty() {
-            report.warnings.push(LdtkValidationIssue::warning(
-                "missing_spawn_point",
-                format!(
-                    "Level '{}' has no entity tagged/named as spawn.",
-                    level.identifier
-                ),
-            ));
-        }
-
-        if config.warn_on_unregistered_entities {
-            for entity in &level.entities {
-                if registry
-                    .resolve(
-                        entity.layer_identifier.as_deref(),
-                        &entity.entity_identifier,
-                    )
-                    .is_none()
-                {
-                    report.warnings.push(LdtkValidationIssue::warning(
-                        "unregistered_entity",
-                        format!(
-                            "LDtk entity '{}' in level '{}' has no registered bundle/spawner.",
-                            entity.entity_identifier, level.identifier
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
-    for layer in catalog.layers.values() {
-        if layer.tileset_uid.is_some() && layer.tileset_rel_path.is_none() {
-            report.warnings.push(LdtkValidationIssue::warning(
-                "missing_tileset_path",
-                format!(
-                    "Layer '{}' in level '{}' references a tileset without a relative path.",
-                    layer.identifier, layer.level_identifier
-                ),
-            ));
-        }
-    }
 }
 
 fn extract_tilesets(json: &LdtkJson) -> HashMap<i32, LdtkTilesetInfo> {
@@ -822,7 +790,8 @@ fn tile_id_from_rect(rect: &TilesetRectangle, tileset: &LdtkTilesetInfo) -> Opti
 fn capture_collision_data(
     mut commands: Commands<'_, '_>,
     config: Res<'_, LdtkConfig>,
-    mut catalog: ResMut<'_, LdtkCollisionCatalog>,
+    catalog: Res<'_, LdtkMapCatalog>,
+    mut collision_catalog: ResMut<'_, LdtkCollisionCatalog>,
     mut load_state: ResMut<'_, LdtkLoadState>,
     int_grid_query: Query<
         '_,
@@ -838,12 +807,15 @@ fn capture_collision_data(
     layer_query: Query<'_, '_, &LayerMetadata, Added<LayerMetadata>>,
 ) {
     for layer in layer_query.iter() {
-        let key = layer_key(&layer.level_id.to_string(), &layer.identifier);
-        catalog
+        let (level_identifier, level_iid) =
+            resolve_level_reference(&catalog, &layer.level_id.to_string());
+        let key = layer_key(&level_identifier, &layer.identifier);
+        collision_catalog
             .layers
             .entry(key)
             .or_insert_with(|| LdtkCollisionLayerInfo {
-                level_identifier: layer.level_id.to_string(),
+                level_identifier,
+                level_iid,
                 layer_identifier: layer.identifier.clone(),
                 layer_iid: layer.iid.clone(),
                 layer_type: format!("{:?}", layer.layer_instance_type),
@@ -860,16 +832,17 @@ fn capture_collision_data(
         let layer_iid = layer
             .map(|metadata| metadata.iid.clone())
             .unwrap_or_default();
-        let level_identifier = layer
-            .map(|metadata| metadata.level_id.to_string())
-            .unwrap_or_default();
+        let (level_identifier, level_iid) = layer
+            .map(|metadata| resolve_level_reference(&catalog, &metadata.level_id.to_string()))
+            .unwrap_or_else(|| (String::new(), String::new()));
         let grid_position = grid
             .map(|coords| IVec2::new(coords.x, coords.y))
             .unwrap_or_default();
         let collision = resolve_collision_rule(&config, &layer_identifier, cell.value);
 
-        catalog.cells.push(LdtkCollisionCell {
+        collision_catalog.cells.push(LdtkCollisionCell {
             level_identifier: level_identifier.clone(),
+            level_iid: level_iid.clone(),
             layer_identifier: layer_identifier.clone(),
             layer_iid: layer_iid.clone(),
             grid_position,
@@ -886,11 +859,12 @@ fn capture_collision_data(
             });
         }
 
-        let entry = catalog
+        let entry = collision_catalog
             .layers
             .entry(layer_key(&level_identifier, &layer_identifier))
             .or_insert_with(|| LdtkCollisionLayerInfo {
                 level_identifier,
+                level_iid,
                 layer_identifier,
                 layer_iid,
                 layer_type: String::from("IntGrid"),
@@ -900,8 +874,18 @@ fn capture_collision_data(
             });
         entry.solid_cells += usize::from(collision.solid);
         entry.sensor_cells += usize::from(collision.sensor);
-        load_state.stats.collision_cells = catalog.cells.len();
+        load_state.stats.collision_cells = collision_catalog.cells.len();
     }
+}
+
+fn resolve_level_reference(catalog: &LdtkMapCatalog, level_id: &str) -> (String, String) {
+    if let Some(level) = catalog.levels.values().find(|level| level.iid == level_id) {
+        return (level.identifier.clone(), level.iid.clone());
+    }
+    if let Some(level) = catalog.levels.get(level_id) {
+        return (level.identifier.clone(), level.iid.clone());
+    }
+    (level_id.to_string(), level_id.to_string())
 }
 
 fn resolve_collision_rule(
@@ -942,13 +926,23 @@ fn capture_entity_instances(
     query: Query<'_, '_, (Entity, &EntityInstance), Added<EntityInstance>>,
 ) {
     for (entity, instance) in query.iter() {
-        let snapshot = map_catalog
+        let snapshot = match map_catalog
             .levels
             .values()
             .flat_map(|level| level.entities.iter())
             .find(|snapshot| snapshot.entity_iid == instance.iid)
             .cloned()
-            .unwrap_or_else(|| fallback_entity_snapshot(instance));
+        {
+            Some(snapshot) => snapshot,
+            None => {
+                warn!(
+                    "LDtk entity '{}' ({}) not found in the map catalog; using a fallback snapshot without world/level/layer context. \
+                     This usually means the entity's layer was filtered out or the catalog has not been built yet.",
+                    instance.identifier, instance.iid
+                );
+                fallback_entity_snapshot(instance)
+            }
+        };
 
         entity_catalog
             .by_iid
@@ -1031,15 +1025,6 @@ fn apply_registered_entity_behaviors(
     }
 }
 
-fn register_marked_entities(
-    mut commands: Commands<'_, '_>,
-    query: Query<'_, '_, Entity, Added<LdtkEntityMarker>>,
-) {
-    for entity in query.iter() {
-        commands.entity(entity).insert(LdtkPersistent);
-    }
-}
-
 fn sync_level_lifecycle_events(
     mut events: MessageReader<'_, '_, LevelEvent>,
     mut runtime: ResMut<'_, LdtkRuntimeState>,
@@ -1058,25 +1043,9 @@ fn sync_level_lifecycle_events(
 }
 
 fn tick_ldtk_tile_animators(time: Res<'_, Time>, mut query: Query<'_, '_, &mut LdtkTileAnimator>) {
+    let delta = time.delta();
     for mut animator in query.iter_mut() {
-        animator.timer.tick(time.delta());
-        if !animator.timer.just_finished() || animator.animation.frames.is_empty() {
-            continue;
-        }
-
-        animator.frame_index += 1;
-        if animator.frame_index >= animator.animation.frames.len() {
-            animator.frame_index = if animator.animation.repeat {
-                0
-            } else {
-                animator.animation.frames.len() - 1
-            };
-        }
-
-        let duration = animator.animation.frames[animator.frame_index]
-            .duration
-            .max(0.001);
-        animator.timer = Timer::from_seconds(duration, TimerMode::Repeating);
+        animator.advance(delta);
     }
 }
 

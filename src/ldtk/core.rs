@@ -1,5 +1,17 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+/// Explicit ordering for the LDtk systems so dependent stages run in a
+/// deterministic sequence instead of relying on tuple insertion order.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LdtkLoadSet {
+    Commands,
+    Catalog,
+    Capture,
+    LevelTransitions,
+    Animation,
+}
 
 #[derive(Debug, Clone, Resource)]
 pub struct LdtkConfig {
@@ -12,6 +24,7 @@ pub struct LdtkConfig {
     pub include_layers: HashSet<String>,
     pub exclude_layers: HashSet<String>,
     pub validate_on_load: bool,
+    pub strict_validation: bool,
     pub warn_on_unregistered_entities: bool,
 }
 
@@ -27,6 +40,7 @@ impl Default for LdtkConfig {
             include_layers: HashSet::new(),
             exclude_layers: HashSet::new(),
             validate_on_load: true,
+            strict_validation: false,
             warn_on_unregistered_entities: true,
         }
     }
@@ -78,6 +92,11 @@ impl LdtkConfig {
 
     pub fn without_unregistered_entity_warnings(mut self) -> Self {
         self.warn_on_unregistered_entities = false;
+        self
+    }
+
+    pub fn with_strict_validation(mut self) -> Self {
+        self.strict_validation = true;
         self
     }
 
@@ -187,6 +206,13 @@ impl LdtkValidationIssue {
             message: message.into(),
         }
     }
+
+    pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Resource, Default)]
@@ -214,7 +240,6 @@ pub struct LdtkMapCatalog {
     pub layers: HashMap<String, LdtkLayerInfo>,
     pub tilesets: HashMap<i32, LdtkTilesetInfo>,
     pub tile_animations: HashMap<LdtkTileKey, LdtkTileAnimation>,
-    pub portals: Vec<LdtkPortalLink>,
 }
 
 impl LdtkMapCatalog {
@@ -232,6 +257,7 @@ pub struct LdtkCollisionCatalog {
 #[derive(Debug, Clone, Default)]
 pub struct LdtkCollisionLayerInfo {
     pub level_identifier: String,
+    pub level_iid: String,
     pub layer_identifier: String,
     pub layer_iid: String,
     pub layer_type: String,
@@ -243,6 +269,7 @@ pub struct LdtkCollisionLayerInfo {
 #[derive(Debug, Clone, Default)]
 pub struct LdtkCollisionCell {
     pub level_identifier: String,
+    pub level_iid: String,
     pub layer_identifier: String,
     pub layer_iid: String,
     pub grid_position: IVec2,
@@ -336,15 +363,6 @@ pub struct LdtkSpawnPoint {
     pub level_identifier: String,
     pub layer_identifier: String,
     pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LdtkPortalLink {
-    pub source_level: String,
-    pub target_level: String,
-    pub source_portal_id: String,
-    pub target_portal_id: String,
-    pub target_spawn: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -486,6 +504,32 @@ impl LdtkTileAnimator {
             timer: Timer::from_seconds(duration, TimerMode::Repeating),
         }
     }
+
+    /// Advances the animation by `delta`. Returns the tile id of the new frame
+    /// when the frame changed this tick, otherwise `None`. This is the single
+    /// source of truth for frame stepping shared by every animator system.
+    pub fn advance(&mut self, delta: Duration) -> Option<i32> {
+        self.timer.tick(delta);
+        if !self.timer.just_finished() || self.animation.frames.is_empty() {
+            return None;
+        }
+
+        self.frame_index += 1;
+        if self.frame_index >= self.animation.frames.len() {
+            self.frame_index = if self.animation.repeat {
+                0
+            } else {
+                self.animation.frames.len() - 1
+            };
+        }
+
+        let duration = self.animation.frames[self.frame_index].duration.max(0.001);
+        self.timer = Timer::from_seconds(duration, TimerMode::Repeating);
+        self.animation
+            .frames
+            .get(self.frame_index)
+            .map(|frame| frame.tile_id)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -504,25 +548,37 @@ pub struct LdtkEntitySpawnContext {
     pub field_values: HashMap<String, LdtkFieldValue>,
 }
 
-impl LdtkEntitySpawnContext {
-    pub fn field(&self, identifier: &str) -> Option<&LdtkFieldValue> {
-        self.field_values.get(identifier)
+/// Shared typed accessors for anything that carries LDtk field instances.
+/// Implemented by both the live snapshot ([`LdtkImportedEntity`]) and the
+/// spawn-time context ([`LdtkEntitySpawnContext`]) so the lookup logic lives
+/// in exactly one place.
+pub trait LdtkFieldAccess {
+    fn field_values(&self) -> &HashMap<String, LdtkFieldValue>;
+
+    fn field(&self, identifier: &str) -> Option<&LdtkFieldValue> {
+        self.field_values().get(identifier)
     }
 
-    pub fn field_bool(&self, identifier: &str) -> Option<bool> {
+    fn field_bool(&self, identifier: &str) -> Option<bool> {
         self.field(identifier).and_then(LdtkFieldValue::as_bool)
     }
 
-    pub fn field_i64(&self, identifier: &str) -> Option<i64> {
+    fn field_i64(&self, identifier: &str) -> Option<i64> {
         self.field(identifier).and_then(LdtkFieldValue::as_i64)
     }
 
-    pub fn field_f64(&self, identifier: &str) -> Option<f64> {
+    fn field_f64(&self, identifier: &str) -> Option<f64> {
         self.field(identifier).and_then(LdtkFieldValue::as_f64)
     }
 
-    pub fn field_str(&self, identifier: &str) -> Option<&str> {
+    fn field_str(&self, identifier: &str) -> Option<&str> {
         self.field(identifier).and_then(LdtkFieldValue::as_str)
+    }
+}
+
+impl LdtkFieldAccess for LdtkEntitySpawnContext {
+    fn field_values(&self) -> &HashMap<String, LdtkFieldValue> {
+        &self.field_values
     }
 }
 
@@ -542,25 +598,9 @@ pub struct LdtkImportedEntity {
     pub field_values: HashMap<String, LdtkFieldValue>,
 }
 
-impl LdtkImportedEntity {
-    pub fn field(&self, identifier: &str) -> Option<&LdtkFieldValue> {
-        self.field_values.get(identifier)
-    }
-
-    pub fn field_bool(&self, identifier: &str) -> Option<bool> {
-        self.field(identifier).and_then(LdtkFieldValue::as_bool)
-    }
-
-    pub fn field_i64(&self, identifier: &str) -> Option<i64> {
-        self.field(identifier).and_then(LdtkFieldValue::as_i64)
-    }
-
-    pub fn field_f64(&self, identifier: &str) -> Option<f64> {
-        self.field(identifier).and_then(LdtkFieldValue::as_f64)
-    }
-
-    pub fn field_str(&self, identifier: &str) -> Option<&str> {
-        self.field(identifier).and_then(LdtkFieldValue::as_str)
+impl LdtkFieldAccess for LdtkImportedEntity {
+    fn field_values(&self) -> &HashMap<String, LdtkFieldValue> {
+        &self.field_values
     }
 }
 
@@ -918,5 +958,114 @@ mod tests {
         assert!(config.should_include_layer("Ground"));
         assert!(!config.should_include_layer("Background"));
         assert!(!config.should_include_layer("Debug"));
+    }
+}
+
+pub(crate) fn validate_catalog(
+    catalog: &LdtkMapCatalog,
+    registry: &LdtkEntityRegistry,
+    config: &LdtkConfig,
+    report: &mut LdtkValidationReport,
+) {
+    report.clear();
+
+    for level in catalog.levels.values() {
+        if level.external_path.is_some() && level.tiles.is_empty() && level.entities.is_empty() {
+            let issue = LdtkValidationIssue::warning(
+                "external_level_not_cataloged",
+                format!(
+                    "Level '{}' references an external .ldtkl file. bevy_ecs_ldtk can load it, but this metadata catalog only sees embedded layer data.",
+                    level.identifier
+                ),
+            );
+            if config.strict_validation {
+                report
+                    .errors
+                    .push(LdtkValidationIssue::error(issue.code, issue.message));
+            } else {
+                report.warnings.push(issue);
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if level.external_path.is_some() {
+            let issue = LdtkValidationIssue::warning(
+                "external_level_wasm_unsupported",
+                format!(
+                    "Level '{}' references an external .ldtkl file. The metadata catalog skips external levels on wasm32; use embedded levels or custom IO.",
+                    level.identifier
+                ),
+            );
+            if config.strict_validation {
+                report
+                    .errors
+                    .push(LdtkValidationIssue::error(issue.code, issue.message));
+            } else {
+                report.warnings.push(issue);
+            }
+        }
+
+        if level.spawn_points.is_empty() {
+            let issue = LdtkValidationIssue::warning(
+                "missing_spawn_point",
+                format!(
+                    "Level '{}' has no entity tagged/named as spawn.",
+                    level.identifier
+                ),
+            );
+            if config.strict_validation {
+                report
+                    .errors
+                    .push(LdtkValidationIssue::error(issue.code, issue.message));
+            } else {
+                report.warnings.push(issue);
+            }
+        }
+
+        if config.warn_on_unregistered_entities {
+            for entity in &level.entities {
+                if registry
+                    .resolve(
+                        entity.layer_identifier.as_deref(),
+                        &entity.entity_identifier,
+                    )
+                    .is_none()
+                {
+                    let issue = LdtkValidationIssue::warning(
+                        "unregistered_entity",
+                        format!(
+                            "LDtk entity '{}' in level '{}' has no registered bundle/spawner.",
+                            entity.entity_identifier, level.identifier
+                        ),
+                    );
+                    if config.strict_validation {
+                        report
+                            .errors
+                            .push(LdtkValidationIssue::error(issue.code, issue.message));
+                    } else {
+                        report.warnings.push(issue);
+                    }
+                }
+            }
+        }
+    }
+
+    for layer in catalog.layers.values() {
+        if layer.tileset_uid.is_some() && layer.tileset_rel_path.is_none() {
+            let issue = LdtkValidationIssue::warning(
+                "missing_tileset_path",
+                format!(
+                    "Layer '{}' in level '{}' references a tileset without a relative path.",
+                    layer.identifier, layer.level_identifier
+                ),
+            );
+            if config.strict_validation {
+                report
+                    .errors
+                    .push(LdtkValidationIssue::error(issue.code, issue.message));
+            } else {
+                report.warnings.push(issue);
+            }
+        }
     }
 }

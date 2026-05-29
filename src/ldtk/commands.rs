@@ -1,12 +1,18 @@
 use bevy::prelude::*;
 
 use crate::ldtk::core::{LdtkCommand, LdtkCommandQueue, LdtkEntityRegistry, LdtkSpawnWorldEvent};
+use crate::ldtk::level_manager::LevelTransitionRequest;
 
 pub trait LdtkCommandExt {
     fn spawn_ldtk_world(&mut self, world_path: impl Into<String>);
     fn change_ldtk_level(&mut self, level_identifier: impl Into<String>);
     fn reload_ldtk_world(&mut self);
     fn unload_ldtk_world(&mut self);
+    fn transition_to_ldtk_level(
+        &mut self,
+        level_identifier: impl Into<String>,
+        spawn_id: Option<impl Into<String>>,
+    );
 
     fn change_level(&mut self, level_identifier: impl Into<String>) {
         self.change_ldtk_level(level_identifier);
@@ -52,6 +58,21 @@ impl<'w, 's> LdtkCommandExt for Commands<'w, 's> {
                 .resource_mut::<LdtkCommandQueue>()
                 .pending
                 .push(LdtkCommand::UnloadWorld);
+        });
+    }
+
+    fn transition_to_ldtk_level(
+        &mut self,
+        level_identifier: impl Into<String>,
+        spawn_id: Option<impl Into<String>>,
+    ) {
+        let target_level = level_identifier.into();
+        let spawn_id = spawn_id.map(Into::into);
+        self.queue(move |world: &mut World| {
+            world.write_message(LevelTransitionRequest {
+                target_level,
+                spawn_id,
+            });
         });
     }
 }
