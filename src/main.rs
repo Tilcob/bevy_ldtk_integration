@@ -57,7 +57,7 @@ fn queue_initial_transition(
     if messages.read().next().is_some() {
         let mut levels = catalog.levels.keys().cloned().collect::<Vec<_>>();
         levels.sort();
-        state.first_level = levels.get(0).cloned();
+        state.first_level = levels.first().cloned();
         state.second_level = levels.get(1).cloned();
         if let Some(level) = state.first_level.clone() {
             commands.transition_to_ldtk_level(level, None::<String>);

@@ -727,7 +727,7 @@ pub struct LdtkTilesetRect {
 
 /// Typed representation of any LDtk field value, covering all primitive and
 /// composite types that LDtk supports.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum LdtkFieldValue {
     /// A boolean field value.
     Bool(bool),
@@ -748,13 +748,8 @@ pub enum LdtkFieldValue {
     /// An array field containing zero or more [`LdtkFieldValue`] elements.
     Array(Vec<LdtkFieldValue>),
     /// A null / unset field value.
+    #[default]
     Null,
-}
-
-impl Default for LdtkFieldValue {
-    fn default() -> Self {
-        Self::Null
-    }
 }
 
 impl LdtkFieldValue {

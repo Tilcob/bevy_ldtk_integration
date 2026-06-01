@@ -338,10 +338,10 @@ fn finalize_level_transition(
             }
         };
 
-        if resources.current.identifier.as_deref() != Some(&level_identifier) {
-            if let Some(old_identifier) = resources.current.identifier.as_deref() {
-                cleanup_level_entities(&mut commands, &cleanup_query, old_identifier);
-            }
+        if resources.current.identifier.as_deref() != Some(&level_identifier)
+            && let Some(old_identifier) = resources.current.identifier.as_deref()
+        {
+            cleanup_level_entities(&mut commands, &cleanup_query, old_identifier);
         }
 
         // Capture the spawn id before clearing `pending` (Bug 4): the ready event

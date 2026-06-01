@@ -37,6 +37,10 @@
 //! Everything public is re-exported from the crate root. Use
 //! `ldtk_integration::prelude::*` or import individual items directly.
 
+// The LDtk extraction/transition systems thread a lot of Bevy state through
+// wide signatures and complex `Query` types; this is inherent to the domain.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod ldtk;
 
 // ── Plugins ───────────────────────────────────────────────────────────────────

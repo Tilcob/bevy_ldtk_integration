@@ -9,16 +9,9 @@ use std::path::Path;
 use crate::ldtk::core::*;
 use crate::ldtk::validation::validate_catalog;
 
+#[derive(Default)]
 pub struct GameLdtkPlugin {
     pub config: LdtkConfig,
-}
-
-impl Default for GameLdtkPlugin {
-    fn default() -> Self {
-        Self {
-            config: LdtkConfig::default(),
-        }
-    }
 }
 
 impl GameLdtkPlugin {
