@@ -1,7 +1,43 @@
+//! The deferred command queue and the [`Commands`]/[`App`] extension traits
+//! that form the crate's imperative API surface.
+
 use bevy::prelude::*;
 
-use crate::ldtk::core::{LdtkCommand, LdtkCommandQueue, LdtkEntityRegistry, LdtkSpawnWorldEvent};
-use crate::ldtk::level_manager::LevelTransitionRequest;
+use crate::entities::LdtkEntitySpawnContext;
+use crate::events::LdtkSpawnWorldEvent;
+use crate::level_manager::LevelTransitionRequest;
+use crate::registry::LdtkEntityRegistry;
+
+/// Commands that can be submitted to the [`LdtkCommandQueue`] to drive the LDtk
+/// runtime.
+#[derive(Debug, Clone)]
+pub enum LdtkCommand {
+    /// Load and spawn the world at `world_path`.
+    SpawnWorld {
+        /// Asset-relative path to the `.ldtk` file.
+        world_path: String,
+    },
+    /// Transition to the level identified by `level_identifier`.
+    ChangeLevel {
+        /// LDtk identifier of the target level.
+        level_identifier: String,
+    },
+    /// Reload the currently active world from disk.
+    ReloadWorld,
+    /// Despawn the active world and reset runtime state.
+    UnloadWorld,
+}
+
+/// Bevy resource acting as a deferred queue for [`LdtkCommand`]s, which are
+/// processed at the start of each frame by the
+/// [`LdtkLoadSet::Commands`](crate::LdtkLoadSet::Commands) systems.
+///
+/// Prefer the [`LdtkCommandExt`] methods over pushing into this queue directly.
+#[derive(Debug, Clone, Resource, Default)]
+pub struct LdtkCommandQueue {
+    /// Commands waiting to be processed this frame.
+    pub pending: Vec<LdtkCommand>,
+}
 
 /// Extension methods on [`Commands`] for controlling the LDtk world at runtime.
 ///
@@ -124,9 +160,10 @@ pub trait LdtkAppExt {
     /// Registers a [`Bundle`] for the given LDtk entity identifier.
     ///
     /// When `bevy_ecs_ldtk` spawns an entity with this identifier, the bundle
-    /// is inserted via [`Default::default()`]. [`Transform`], [`GlobalTransform`],
-    /// and [`LdtkEntityMarker`](crate::LdtkEntityMarker) are always added
-    /// automatically.
+    /// is inserted via [`Default::default()`], together with an
+    /// [`LdtkEntityMarker`](crate::LdtkEntityMarker). The entity's [`Transform`]
+    /// is **not** touched — `bevy_ecs_ldtk` already places the entity at its
+    /// correct world position.
     fn register_ldtk_entity<B>(&mut self, identifier: impl Into<String>) -> &mut Self
     where
         B: Bundle + Default + Send + Sync + 'static;
@@ -145,17 +182,14 @@ pub trait LdtkAppExt {
     /// Registers a custom spawner function for the given LDtk entity identifier.
     ///
     /// The spawner receives `&mut World`, the target [`Entity`], and a
-    /// [`LdtkEntitySpawnContext`](crate::LdtkEntitySpawnContext) with all field values and position data.
+    /// [`LdtkEntitySpawnContext`] with all field values and position data.
     /// Use this instead of [`Self::register_ldtk_entity`] when you need to read
     /// LDtk custom fields or insert non-default component values.
     /// The context implements [`LdtkFieldAccess`](crate::LdtkFieldAccess).
     fn register_ldtk_entity_spawner(
         &mut self,
         identifier: impl Into<String>,
-        spawner: impl Fn(&mut World, Entity, &crate::ldtk::core::LdtkEntitySpawnContext)
-            + Send
-            + Sync
-            + 'static,
+        spawner: impl Fn(&mut World, Entity, &LdtkEntitySpawnContext) + Send + Sync + 'static,
     ) -> &mut Self;
 
     /// Registers a custom spawner scoped to a specific layer and entity identifier.
@@ -165,10 +199,7 @@ pub trait LdtkAppExt {
         &mut self,
         layer_identifier: impl Into<String>,
         entity_identifier: impl Into<String>,
-        spawner: impl Fn(&mut World, Entity, &crate::ldtk::core::LdtkEntitySpawnContext)
-            + Send
-            + Sync
-            + 'static,
+        spawner: impl Fn(&mut World, Entity, &LdtkEntitySpawnContext) + Send + Sync + 'static,
     ) -> &mut Self;
 }
 
@@ -200,10 +231,7 @@ impl LdtkAppExt for App {
     fn register_ldtk_entity_spawner(
         &mut self,
         identifier: impl Into<String>,
-        spawner: impl Fn(&mut World, Entity, &crate::ldtk::core::LdtkEntitySpawnContext)
-            + Send
-            + Sync
-            + 'static,
+        spawner: impl Fn(&mut World, Entity, &LdtkEntitySpawnContext) + Send + Sync + 'static,
     ) -> &mut Self {
         self.world_mut()
             .resource_mut::<LdtkEntityRegistry>()
@@ -215,10 +243,7 @@ impl LdtkAppExt for App {
         &mut self,
         layer_identifier: impl Into<String>,
         entity_identifier: impl Into<String>,
-        spawner: impl Fn(&mut World, Entity, &crate::ldtk::core::LdtkEntitySpawnContext)
-            + Send
-            + Sync
-            + 'static,
+        spawner: impl Fn(&mut World, Entity, &LdtkEntitySpawnContext) + Send + Sync + 'static,
     ) -> &mut Self {
         self.world_mut()
             .resource_mut::<LdtkEntityRegistry>()

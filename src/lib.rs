@@ -41,102 +41,123 @@
 // wide signatures and complex `Query` types; this is inherent to the domain.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
-pub mod ldtk;
+mod animation;
+mod capture;
+mod catalog;
+mod catalog_builder;
+mod commands;
+mod components;
+mod config;
+mod entities;
+mod events;
+mod external;
+mod fields;
+mod level_manager;
+mod plugin;
+mod registry;
+mod state;
+#[cfg(feature = "tilemap")]
+mod tilemap_adapter;
+mod validation;
 
 // ── Plugins ───────────────────────────────────────────────────────────────────
-pub use ldtk::plugins::GameLdtkPlugin;
-pub use ldtk::level_manager::LevelManagerPlugin;
+pub use level_manager::LevelManagerPlugin;
+pub use plugin::GameLdtkPlugin;
 
 // ── Command extensions ────────────────────────────────────────────────────────
-pub use ldtk::commands::LdtkAppExt;
-pub use ldtk::commands::LdtkCommandExt;
+pub use commands::LdtkAppExt;
+pub use commands::LdtkCommandExt;
 
 // ── Config & rules ────────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkConfig;
-pub use ldtk::core::LdtkCollisionRule;
+pub use config::LdtkCollisionRule;
+pub use config::LdtkConfig;
 
 // ── External level source ─────────────────────────────────────────────────────
-pub use ldtk::core::ExternalLevelSource;
-pub use ldtk::core::LdtkExternalLevelSource;
+pub use external::ExternalLevelSource;
 #[cfg(feature = "external-level-fs")]
-pub use ldtk::core::FsExternalLevelSource;
+pub use external::FsExternalLevelSource;
+pub use external::LdtkExternalLevelSource;
 #[cfg(feature = "external-level-fs")]
-pub use ldtk::core::external_level_path;
+pub use external::external_level_path;
 
 // ── System sets ───────────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkLoadSet;
+pub use plugin::LdtkLoadSet;
 
 // ── Resources: load state & catalog ──────────────────────────────────────────
-pub use ldtk::core::LdtkLoadState;
-pub use ldtk::core::LdtkLoadStatus;
-pub use ldtk::core::LdtkLoadStats;
-pub use ldtk::core::LdtkValidationReport;
-pub use ldtk::core::LdtkValidationIssue;
-pub use ldtk::core::LdtkRuntimeState;
-pub use ldtk::core::LdtkTransitionState;
-pub use ldtk::core::LdtkMapCatalog;
-pub use ldtk::core::LdtkCollisionCatalog;
-pub use ldtk::core::LdtkEntityCatalog;
-pub use ldtk::core::LdtkCommandQueue;
-pub use ldtk::core::LdtkEntityRegistry;
+pub use catalog::LdtkCollisionCatalog;
+pub use catalog::LdtkEntityCatalog;
+pub use catalog::LdtkMapCatalog;
+pub use commands::LdtkCommandQueue;
+pub use registry::LdtkEntityRegistry;
+pub use state::LdtkLoadState;
+pub use state::LdtkLoadStats;
+pub use state::LdtkLoadStatus;
+pub use state::LdtkRuntimeState;
+pub use state::LdtkTransitionState;
+pub use state::LdtkValidationIssue;
+pub use state::LdtkValidationReport;
 
 // ── Catalog data types ────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkWorldInfo;
-pub use ldtk::core::LdtkLevelInfo;
-pub use ldtk::core::LdtkLayerInfo;
-pub use ldtk::core::LdtkLayerType;
-pub use ldtk::core::LdtkTilesetInfo;
-pub use ldtk::core::LdtkCollisionLayerInfo;
-pub use ldtk::core::LdtkCollisionCell;
-pub use ldtk::core::LdtkNeighbor;
-pub use ldtk::core::LdtkDirection;
-pub use ldtk::core::LdtkWorldLayout;
-pub use ldtk::core::LdtkSpawnPoint;
-pub use ldtk::core::LdtkTileKey;
-pub use ldtk::core::LdtkTileMetadata;
-pub use ldtk::core::LdtkTileAnimation;
-pub use ldtk::core::LdtkTileAnimationFrame;
-pub use ldtk::core::LdtkTileAnimator;
+pub use animation::LdtkTileAnimation;
+pub use animation::LdtkTileAnimationFrame;
+pub use animation::LdtkTileAnimator;
+pub use animation::LdtkTileKey;
+pub use catalog::LdtkCollisionCell;
+pub use catalog::LdtkCollisionLayerInfo;
+pub use catalog::LdtkDirection;
+pub use catalog::LdtkLayerInfo;
+pub use catalog::LdtkLayerType;
+pub use catalog::LdtkLevelInfo;
+pub use catalog::LdtkNeighbor;
+pub use catalog::LdtkSpawnPoint;
+pub use catalog::LdtkTileMetadata;
+pub use catalog::LdtkTilesetInfo;
+pub use catalog::LdtkWorldInfo;
+pub use catalog::LdtkWorldLayout;
 
 // ── Field values ──────────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkFieldValue;
-pub use ldtk::core::LdtkFieldAccess;
-pub use ldtk::core::LdtkEntityReference;
-pub use ldtk::core::LdtkTilesetRect;
+pub use fields::LdtkEntityReference;
+pub use fields::LdtkFieldAccess;
+pub use fields::LdtkFieldValue;
+pub use fields::LdtkTilesetRect;
 
 // ── Entity types ──────────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkEntitySpawnContext;
-pub use ldtk::core::LdtkImportedEntity;
-pub use ldtk::core::LdtkEntityMarker;
-pub use ldtk::core::LdtkEntityRegistryKey;
-pub use ldtk::core::LdtkEntitySpawner;
+pub use entities::LdtkEntityMarker;
+pub use entities::LdtkEntitySpawnContext;
+pub use entities::LdtkImportedEntity;
+pub use registry::LdtkEntityRegistryKey;
+pub use registry::LdtkEntitySpawner;
 
 // ── Marker components ─────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkWorldRoot;
-pub use ldtk::core::LdtkPersistent;
-pub use ldtk::core::LdtkCollider;
-pub use ldtk::core::LdtkTileCollision;
+pub use components::LdtkCollider;
+pub use components::LdtkPersistent;
+#[allow(deprecated)]
+pub use components::LdtkTileCollision;
+pub use components::LdtkWorldRoot;
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+pub use commands::LdtkCommand;
 
 // ── Events ────────────────────────────────────────────────────────────────────
-pub use ldtk::core::LdtkSpawnWorldEvent;
-pub use ldtk::core::LdtkMapLoadedEvent;
-pub use ldtk::core::LdtkLevelActivatedEvent;
-pub use ldtk::core::LdtkWorldUnloadedEvent;
-pub use ldtk::core::LdtkValidationFinishedEvent;
+pub use events::LdtkLevelActivatedEvent;
+pub use events::LdtkMapLoadedEvent;
+pub use events::LdtkSpawnWorldEvent;
+pub use events::LdtkValidationFinishedEvent;
+pub use events::LdtkWorldUnloadedEvent;
 
 // ── Level manager ─────────────────────────────────────────────────────────────
-pub use ldtk::level_manager::LdtkLevelManagerConfig;
-pub use ldtk::level_manager::LdtkPlayerLocator;
-pub use ldtk::level_manager::CurrentLdtkLevel;
-pub use ldtk::level_manager::PendingLdtkLevelTransition;
-pub use ldtk::level_manager::LevelTransitionStatus;
-pub use ldtk::level_manager::LevelTransitionState;
-pub use ldtk::level_manager::LevelTransitionRequest;
-pub use ldtk::level_manager::LdtkLevelReadyEvent;
-pub use ldtk::level_manager::LdtkCollisionReadyEvent;
-pub use ldtk::level_manager::LdtkLevelPlayer;
-pub use ldtk::level_manager::LdtkLevelScoped;
-pub use ldtk::level_manager::advance_tile_animation;
+pub use level_manager::CurrentLdtkLevel;
+pub use level_manager::LdtkCollisionReadyEvent;
+pub use level_manager::LdtkLevelManagerConfig;
+pub use level_manager::LdtkLevelPlayer;
+pub use level_manager::LdtkLevelReadyEvent;
+pub use level_manager::LdtkLevelScoped;
+pub use level_manager::LdtkPlayerLocator;
+pub use level_manager::LevelTransitionRequest;
+pub use level_manager::LevelTransitionState;
+pub use level_manager::LevelTransitionStatus;
+pub use level_manager::PendingLdtkLevelTransition;
+pub use level_manager::advance_tile_animation;
 
 /// Re-exports the most commonly used items for glob imports.
 ///
@@ -145,4 +166,38 @@ pub use ldtk::level_manager::advance_tile_animation;
 /// ```
 pub mod prelude {
     pub use super::*;
+}
+
+/// Backwards-compatibility shim for the pre-0.1 module layout
+/// (`ldtk_integration::ldtk::core::*` etc.). Prefer the crate-root re-exports.
+#[doc(hidden)]
+pub mod ldtk {
+    pub mod core {
+        pub use crate::animation::*;
+        pub use crate::catalog::*;
+        #[allow(deprecated)]
+        pub use crate::components::*;
+        pub use crate::config::*;
+        pub use crate::entities::*;
+        pub use crate::events::*;
+        pub use crate::external::*;
+        pub use crate::fields::*;
+        pub use crate::plugin::LdtkLoadSet;
+        pub use crate::registry::*;
+        pub use crate::state::*;
+
+        pub use crate::commands::{LdtkCommand, LdtkCommandQueue};
+    }
+
+    pub mod plugins {
+        pub use crate::plugin::GameLdtkPlugin;
+    }
+
+    pub mod commands {
+        pub use crate::commands::{LdtkAppExt, LdtkCommandExt};
+    }
+
+    pub mod level_manager {
+        pub use crate::level_manager::*;
+    }
 }

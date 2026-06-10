@@ -1,3 +1,10 @@
+//! Minimal demo: loads the bundled `AutoLayers_5_Advanced.ldtk` sample world
+//! and chains two level transitions to exercise the level manager.
+//!
+//! ```text
+//! cargo run --example basic_transitions
+//! ```
+
 use bevy::prelude::*;
 use ldtk_integration::{
     GameLdtkPlugin, LdtkCommandExt, LdtkLevelManagerConfig, LdtkLevelPlayer, LdtkLevelReadyEvent,

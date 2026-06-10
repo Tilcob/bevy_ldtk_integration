@@ -1,5 +1,13 @@
-use bevy::app::{Main, PostStartup, Startup};
+//! End-to-end test: boots a headless Bevy app (no window, no GPU), loads the
+//! bundled sample world, and checks that the catalogs are populated.
+//!
+//! Headless setup: `WinitPlugin` is disabled and no primary window is spawned.
+//! The `RenderPlugin` stays enabled (surfaceless) because `bevy_ecs_tilemap`
+//! hard-requires the `RenderApp` sub-app; on machines without a GPU, wgpu falls
+//! back to a software adapter (e.g. WARP on Windows, lavapipe on Linux).
+
 use bevy::prelude::*;
+use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use bevy_ecs_ldtk::prelude::LevelSelection;
 use ldtk_integration::{
@@ -7,53 +15,66 @@ use ldtk_integration::{
     LdtkLoadStatus, LdtkMapCatalog, LdtkValidationReport, LevelManagerPlugin,
 };
 
-fn run_startup(app: &mut App) {
-    app.world_mut().run_schedule(Startup);
-    app.world_mut().run_schedule(PostStartup);
-}
+fn headless_app(config: LdtkConfig) -> App {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .build()
+            .disable::<WinitPlugin>()
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..Default::default()
+            }),
+    )
+    .add_plugins(GameLdtkPlugin::new(config))
+    .add_plugins(LevelManagerPlugin);
 
-fn update_main(app: &mut App) {
-    app.world_mut().run_schedule(Main);
+    // Driving the app with `update()` skips the runner, which would normally
+    // wait for async plugin init (the renderer) and call finish/cleanup. Do it
+    // here, otherwise render resources like `RenderDevice` never materialise.
+    while app.plugins_state() == bevy::app::PluginsState::Adding {
+        bevy::tasks::tick_global_task_pools_on_main_thread();
+    }
+    app.finish();
+    app.cleanup();
+    app
 }
 
 fn drive_app_until(app: &mut App, mut predicate: impl FnMut(&World) -> bool, max_ticks: usize) {
     for _ in 0..max_ticks {
-        update_main(app);
+        app.update();
         if predicate(app.world()) {
-            break;
+            return;
         }
+        // Asset loading is asynchronous; give the IO task pool a moment.
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "windows",
-    ignore = "requires full window/render resources in the test harness"
-)]
 fn loads_ldtk_project_and_catalogs_metadata() {
-    let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WinitPlugin {
-        run_on_any_thread: true,
-        ..Default::default()
-    }))
-    .add_plugins(GameLdtkPlugin::new(
+    let mut app = headless_app(
         LdtkConfig::default().with_world_asset_path("worlds/AutoLayers_5_Advanced.ldtk"),
-    ))
-    .add_plugins(LevelManagerPlugin);
+    );
 
-    run_startup(&mut app);
     drive_app_until(
         &mut app,
         |world| {
             let state = world.resource::<LdtkLoadState>();
             matches!(state.status, LdtkLoadStatus::Ready | LdtkLoadStatus::Error)
         },
-        200,
+        500,
     );
 
     {
         let load_state = app.world().resource::<LdtkLoadState>();
-        assert_eq!(load_state.status, LdtkLoadStatus::Ready);
+        assert_eq!(
+            load_state.status,
+            LdtkLoadStatus::Ready,
+            "world failed to load: {:?}",
+            load_state.errors
+        );
     }
 
     {
@@ -73,7 +94,11 @@ fn loads_ldtk_project_and_catalogs_metadata() {
     };
     *app.world_mut().resource_mut::<LevelSelection>() =
         LevelSelection::Identifier(level_identifier);
-    drive_app_until(&mut app, |_| false, 40);
+    drive_app_until(
+        &mut app,
+        |world| !world.resource::<LdtkCollisionCatalog>().cells.is_empty(),
+        100,
+    );
 
     {
         let catalog = app.world().resource::<LdtkMapCatalog>();

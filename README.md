@@ -1,63 +1,66 @@
-# ldtk_integration
+# bevy_ldtk_integration
 
-Eine Bevy-Dependency für LDtk-Level-Loading in 2D-Spielen. Das Rendering kommt von [`bevy_ecs_ldtk`](https://github.com/Trouv/bevy_ecs_ldtk); dieses Crate legt darüber eine spielnahe API für Runtime-State, Kataloge, Entity-Registrierung, Collision und Level-Transitions.
+A Bevy plugin for LDtk level loading in 2D games. Rendering and asset loading are handled by [`bevy_ecs_ldtk`](https://github.com/Trouv/bevy_ecs_ldtk); this crate adds a game-oriented API on top: runtime state, metadata catalogs, typed entity registration, IntGrid collision rules, and level transitions with spawn-point resolution.
 
-**Versionen:** Bevy `0.18`, bevy_ecs_ldtk `0.14`, Rust Edition 2024
+**Versions:** Bevy `0.18`, bevy_ecs_ldtk `0.14`, Rust edition 2024
+
+> **Naming note:** the package is `bevy_ldtk_integration`, but the library target is named `ldtk_integration` for backwards compatibility — imports are written as `use ldtk_integration::...`.
 
 ---
 
-## Inhaltsverzeichnis
+## Table of contents
 
 - [Installation](#installation)
-- [Feature Flags](#feature-flags)
-- [Schnellstart](#schnellstart)
+- [Feature flags](#feature-flags)
+- [Quick start](#quick-start)
 - [GameLdtkPlugin](#gameldtkplugin)
 - [LevelManagerPlugin](#levelmanagerplugin)
-- [Entity-Registrierung](#entity-registrierung)
+- [Entity registration](#entity-registration)
 - [Collision](#collision)
-- [Layer-Filter](#layer-filter)
-- [Tile-Animationen](#tile-animationen)
-- [Load-State und Validierung](#load-state-und-validierung)
-- [API-Referenz](#api-referenz)
-- [Beispiel](#beispiel)
+- [Layer filters](#layer-filters)
+- [Tile animations](#tile-animations)
+- [Load state and validation](#load-state-and-validation)
+- [API reference](#api-reference)
+- [Examples](#examples)
+- [Tests](#tests)
 
 ---
 
 ## Installation
 
 ```toml
-# Cargo.toml des Spiels
+# Your game's Cargo.toml
 [dependencies]
-ldtk_integration = { path = "../ldtk_integration" }
+ldtk_integration = { package = "bevy_ldtk_integration", git = "https://github.com/Tilcob/ldtk_integration.git" }
 bevy = "0.18.1"
 ```
 
-Per Git:
+Or from a local checkout:
 
 ```toml
-ldtk_integration = { git = "https://github.com/Tilcob/ldtk_integration.git" }
+ldtk_integration = { package = "bevy_ldtk_integration", path = "../bevy_ldtk_integration" }
 ```
 
 ---
 
-## Feature Flags
+## Feature flags
 
-| Feature | Default | Beschreibung |
-|---------|---------|--------------|
-| `tilemap` | ✅ an | Tilemap-Animations-Adapter über `bevy_ecs_tilemap` |
-| `external-level-fs` | ✅ an | Liest externe `.ldtkl` Level vom Dateisystem (kein WASM) |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `tilemap` | ✅ on | Tile-animation adapter for `bevy_ecs_tilemap` |
+| `external-level-fs` | ✅ on | Reads external `.ldtkl` level files from the filesystem (not WASM) |
 
-WASM-Build ohne Dateisystem-Zugriff:
+WASM build without filesystem access:
 
 ```toml
-ldtk_integration = { path = "...", default-features = false, features = ["tilemap"] }
+ldtk_integration = { package = "bevy_ldtk_integration", path = "...", default-features = false, features = ["tilemap"] }
 ```
 
 ---
 
-## Schnellstart
+## Quick start
 
-LDtk-Dateien liegen relativ zu `assets/`. Eine Datei unter `assets/worlds/map.ldtk` wird als `"worlds/map.ldtk"` angegeben.
+LDtk files live relative to `assets/`. A file at `assets/worlds/map.ldtk` is referenced as `"worlds/map.ldtk"`.
 
 ```rust
 use bevy::prelude::*;
@@ -79,103 +82,103 @@ fn main() {
 
 ## GameLdtkPlugin
 
-Das Kern-Plugin. Muss immer registriert sein.
+The core plugin. Always required.
 
 ```rust
 use ldtk_integration::{GameLdtkPlugin, LdtkConfig};
 
 app.add_plugins(GameLdtkPlugin::new(LdtkConfig::default()));
-// oder mit Defaults:
+// or with defaults:
 app.add_plugins(GameLdtkPlugin::default());
 ```
 
-Registriert folgende Ressourcen: `LdtkConfig`, `LdtkRuntimeState`, `LdtkLoadState`, `LdtkValidationReport`, `LdtkMapCatalog`, `LdtkCollisionCatalog`, `LdtkEntityCatalog`, `LdtkCommandQueue`, `LdtkEntityRegistry`, `LdtkExternalLevelSource`.
+Registers these resources: `LdtkConfig`, `LdtkRuntimeState`, `LdtkLoadState`, `LdtkValidationReport`, `LdtkMapCatalog`, `LdtkCollisionCatalog`, `LdtkEntityCatalog`, `LdtkCommandQueue`, `LdtkEntityRegistry`, `LdtkExternalLevelSource`.
 
 ### LdtkConfig
 
-Builder-API zur Konfiguration des Plugins:
+Builder API for configuring the plugin:
 
 ```rust
 LdtkConfig::default()
-    // Pfad zur .ldtk-Datei, relativ zu assets/
+    // Path to the .ldtk file, relative to assets/
     .with_world_asset_path("worlds/map.ldtk")
 
-    // Basis-Pfad für externe .ldtkl-Level (default: "assets")
+    // Base path for external .ldtkl levels (default: "assets")
     .with_asset_root("assets")
 
-    // Bestimmte IntGrid-Werte als solid markieren
-    // (ohne Angabe: alle Werte != 0 gelten als solid)
+    // Mark specific IntGrid values as solid
+    // (without this, every value != 0 counts as solid)
     .with_solid_int_grid_values([1, 2])
 
-    // Präzise Collision-Regeln (überschreiben int_grid_solid_values)
+    // Precise collision rules (override int_grid_solid_values)
     .with_collision_rules([
         LdtkCollisionRule::solid(1).for_layer("Collision"),
         LdtkCollisionRule::sensor(2, "water").for_layer("Gameplay"),
     ])
 
-    // Nur diese Layer katalogisieren
+    // Only catalog these layers
     .include_layers(["Collision", "Entities"])
 
-    // Diese Layer überspringen
+    // Skip these layers
     .exclude_layers(["Debug", "Notes"])
 
-    // Externe .ldtkl-Dateien nicht einlesen
+    // Don't read external .ldtkl files
     .without_external_level_catalog()
 
-    // Warnings zu Errors promoten (setzt LdtkLoadState auf Error)
+    // Promote validation warnings to errors (sets LdtkLoadState to Error)
     .with_strict_validation()
 
-    // Validierung komplett deaktivieren
+    // Disable validation entirely
     .without_validation()
 
-    // Kein Warn-Log für nicht registrierte LDtk-Entities
+    // No warning log for unregistered LDtk entities
     .without_unregistered_entity_warnings()
 ```
 
 ### Commands
 
-Alle Commands sind über `LdtkCommandExt` auf `Commands` verfügbar:
+All commands are available on `Commands` via `LdtkCommandExt`:
 
 ```rust
 use ldtk_integration::LdtkCommandExt;
 
-// World laden (überschreibt laufende World)
+// Load a world (replaces a running world)
 commands.spawn_ldtk_world("worlds/map.ldtk");
 
-// Level wechseln (LevelSelection, kein Spieler-Teleport)
+// Switch the level (LevelSelection only, no player teleport)
 commands.change_ldtk_level("Level_01");
 
-// Alias für change_ldtk_level
+// Alias for change_ldtk_level
 commands.change_level("Level_01");
 
-// Aktuelle World neu laden
+// Reload the current world
 commands.reload_ldtk_world();
 
-// World entladen
+// Unload the world
 commands.unload_ldtk_world();
 
-// Level-Transition mit Spawnpunkt (benötigt LevelManagerPlugin)
+// Level transition with spawn point (requires LevelManagerPlugin)
 commands.transition_to_ldtk_level("Level_02", Some("Entrance_A"));
 commands.transition_to_ldtk_level("Level_02", None::<String>);
 ```
 
-### App Extensions
+### App extensions
 
-Entity-Registrierung über `LdtkAppExt`:
+Entity registration via `LdtkAppExt`:
 
 ```rust
 use ldtk_integration::LdtkAppExt;
 
-// Bundle registrieren (Default::default() wird als Basis genutzt)
+// Register a bundle (inserted via Default::default())
 app.register_ldtk_entity::<PlayerBundle>("Player");
 
-// Bundle auf Layer + Entity-Identifier einschränken
+// Restrict a bundle to a layer + entity identifier
 app.register_ldtk_entity_for_layer::<ChestBundle>("Objects", "Chest");
 
-// Spawner-Funktion registrieren
+// Register a spawner function
 app.register_ldtk_entity_spawner("Door", my_door_spawner);
 
-// Spawner auf Layer + Entity-Identifier einschränken
+// Restrict a spawner to a layer + entity identifier
 app.register_ldtk_entity_spawner_for_layer("Objects", "Key", my_key_spawner);
 ```
 
@@ -183,7 +186,7 @@ app.register_ldtk_entity_spawner_for_layer("Objects", "Key", my_key_spawner);
 
 ## LevelManagerPlugin
 
-Optionales Plugin für Level-Transitions mit Spawnpunkt-Logik und automatischem Entity-Cleanup. Benötigt `GameLdtkPlugin`.
+Optional plugin for level transitions with spawn-point logic and automatic entity cleanup. Requires `GameLdtkPlugin`.
 
 ```rust
 use ldtk_integration::{GameLdtkPlugin, LevelManagerPlugin};
@@ -192,39 +195,39 @@ app.add_plugins(GameLdtkPlugin::default())
    .add_plugins(LevelManagerPlugin);
 ```
 
-### Transition auslösen
+### Triggering a transition
 
 ```rust
-// Zu einem Level wechseln, Spieler landet an "Entrance_A"
+// Switch to a level; the player lands at "Entrance_A"
 commands.transition_to_ldtk_level("Dungeon_02", Some("Entrance_A"));
 
-// Spawnpunkt automatisch wählen (PlayerSpawn → erster Spawnpunkt → Fallback)
+// Pick the spawn point automatically (PlayerSpawn → first spawn point → fallback)
 commands.transition_to_ldtk_level("Dungeon_02", None::<String>);
 ```
 
-### Spawnpunkt-Auflösung
+### Spawn-point resolution
 
-Der Manager sucht in dieser Reihenfolge:
+The manager searches in this order:
 
-1. Entity mit `identifier == spawn_id` oder Tag `spawn_id` (wenn angegeben)
-2. Entity mit `identifier == "PlayerSpawn"` oder Tag `"PlayerSpawn"`
-3. Erster Spawnpunkt im Level
-4. `Vec2::ZERO` wenn `allow_missing_spawnpoints: true`
-5. `LevelTransitionStatus::Failed` wenn kein Spawnpunkt gefunden
+1. Entity with `identifier == spawn_id` or tag `spawn_id` (when given; case-insensitive)
+2. Entity with `identifier == "PlayerSpawn"` or tag `"PlayerSpawn"` (configurable)
+3. First spawn point in the level
+4. `Vec2::ZERO` when `allow_missing_spawnpoints: true`
+5. `LevelTransitionStatus::Failed` when no spawn point was found
 
-Als Spawnpunkt gilt jede LDtk-Entity deren Identifier `"spawn"` enthält oder die den Tag `"spawn"` trägt.
+Any LDtk entity whose identifier contains `"spawn"` (case-insensitive) or that carries a `spawn` tag counts as a spawn point.
 
-### Spieler-Teleport
+### Player teleport
 
 ```rust
-// Option A: Marker-Komponente
+// Option A: marker component
 commands.spawn((Player, LdtkLevelPlayer, Transform::default(), GlobalTransform::default()));
 
-// Option B: Explizit per Ressource (überschreibt Marker-Suche)
+// Option B: explicit resource (overrides the marker search)
 commands.insert_resource(LdtkPlayerLocator { entity: Some(player_entity) });
 ```
 
-### Konfiguration
+### Configuration
 
 ```rust
 app.insert_resource(LdtkLevelManagerConfig {
@@ -232,50 +235,49 @@ app.insert_resource(LdtkLevelManagerConfig {
     default_spawn_identifier: "PlayerSpawn".to_string(),
     allow_missing_spawnpoints: false,
     enable_tile_animation_adapter: false,
-    ..Default::default()
 });
 ```
 
 ### Events
 
-| Event | Inhalt | Wann |
-|-------|--------|------|
-| `LdtkLevelReadyEvent` | `level_identifier`, `spawn_id`, `position` | Spieler wurde teleportiert |
-| `LdtkCollisionReadyEvent` | `level_identifier`, `cells` | Collision-Daten des Levels fertig |
-| `LdtkMapLoadedEvent` | `world_identifier` | World vollständig geladen |
-| `LdtkLevelActivatedEvent` | `level_identifier` | Level per `change_ldtk_level` aktiviert |
-| `LdtkWorldUnloadedEvent` | — | World entladen |
+| Event | Payload | When |
+|-------|---------|------|
+| `LdtkLevelReadyEvent` | `level_identifier`, `spawn_id`, `position` | Player was teleported |
+| `LdtkCollisionReadyEvent` | `level_identifier`, `cells` | Collision data for the level is ready |
+| `LdtkMapLoadedEvent` | `world_identifier` | World fully loaded |
+| `LdtkLevelActivatedEvent` | `level_identifier` | Level activated via `change_ldtk_level` |
+| `LdtkWorldUnloadedEvent` | — | World unloaded |
 
-### Transition-State
+### Transition state
 
 ```rust
 fn watch_state(state: Res<LevelTransitionState>) {
     match state.status {
         LevelTransitionStatus::Idle => {}
-        LevelTransitionStatus::WaitingForSpawn => { /* Ladebildschirm anzeigen */ }
-        LevelTransitionStatus::Ready => { /* Ladebildschirm ausblenden */ }
+        LevelTransitionStatus::WaitingForSpawn => { /* show loading screen */ }
+        LevelTransitionStatus::Ready => { /* hide loading screen */ }
         LevelTransitionStatus::Failed => {
-            error!("Transition fehlgeschlagen: {:?}", state.error);
+            error!("Transition failed: {:?}", state.error);
         }
     }
 }
 ```
 
-### Persistenz und Cleanup
+### Persistence and cleanup
 
-Beim Levelwechsel werden alle Entities despawnt, die:
-- `LdtkEntityMarker` mit dem alten Level tragen, **oder**
-- `LdtkLevelScoped { level_identifier }` mit dem alten Level tragen
+On a level switch, every entity is despawned that:
+- carries `LdtkEntityMarker` referencing the old level, **or**
+- carries `LdtkLevelScoped { level_identifier }` referencing the old level
 
-Ausnahmen (werden nicht despawnt):
-- Entities mit `LdtkPersistent`
-- Entities mit `LdtkLevelPlayer`
+Exceptions (never despawned):
+- entities with `LdtkPersistent`
+- entities with `LdtkLevelPlayer`
 
 ```rust
-// Entity bleibt über Levelwechsel erhalten
+// Entity survives level switches
 commands.entity(my_entity).insert(LdtkPersistent);
 
-// Entity wird beim Verlassen von "Level_01" despawnt
+// Entity is despawned when leaving "Level_01"
 commands.entity(my_entity).insert(LdtkLevelScoped {
     level_identifier: "Level_01".to_string(),
 });
@@ -283,9 +285,9 @@ commands.entity(my_entity).insert(LdtkLevelScoped {
 
 ---
 
-## Entity-Registrierung
+## Entity registration
 
-### Bundle (einfach)
+### Bundle (simple)
 
 ```rust
 #[derive(Bundle, Default)]
@@ -297,9 +299,9 @@ struct ChestBundle {
 app.register_ldtk_entity::<ChestBundle>("Chest");
 ```
 
-`Transform` und `GlobalTransform` werden automatisch aus der LDtk-Entity-Position gesetzt. `LdtkEntityMarker` wird ebenfalls automatisch hinzugefügt.
+An `LdtkEntityMarker` is added automatically. The entity's `Transform` is **not** touched by this crate — `bevy_ecs_ldtk` already places every entity instance at its correct world position.
 
-### Spawner (flexibel)
+### Spawner (flexible)
 
 ```rust
 app.register_ldtk_entity_spawner("Door", |world: &mut World, entity: Entity, ctx: &LdtkEntitySpawnContext| {
@@ -312,26 +314,26 @@ app.register_ldtk_entity_spawner("Door", |world: &mut World, entity: Entity, ctx
 
 ### LdtkEntitySpawnContext
 
-Enthält alle Informationen zur LDtk-Entity beim Spawn:
+Contains everything about the LDtk entity at spawn time:
 
-| Feld | Typ | Beschreibung |
-|------|-----|--------------|
-| `entity_iid` | `String` | Eindeutige LDtk-ID der Entity-Instanz |
-| `entity_identifier` | `String` | Definition-Name (z.B. `"Door"`) |
-| `world_identifier` | `Option<String>` | Name der LDtk-World |
-| `level_identifier` | `Option<String>` | Name des Levels |
-| `layer_identifier` | `Option<String>` | Name des Layers |
-| `position` | `Vec2` | Pixelposition in der World |
-| `grid_position` | `IVec2` | Gitter-Position im Layer |
-| `size` | `Vec2` | Größe der Entity in Pixeln |
-| `pivot` | `Vec2` | Pivot-Punkt (0.0–1.0) |
-| `tags` | `Vec<String>` | LDtk-Entity-Tags |
-| `tile` | `Option<LdtkTileMetadata>` | Optionale Tile-Darstellung der Entity |
-| `field_values` | `HashMap<String, LdtkFieldValue>` | Alle Custom Fields |
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_iid` | `String` | Unique LDtk ID of the entity instance |
+| `entity_identifier` | `String` | Definition name (e.g. `"Door"`) |
+| `world_identifier` | `Option<String>` | Name of the LDtk world |
+| `level_identifier` | `Option<String>` | Name of the level |
+| `layer_identifier` | `Option<String>` | Name of the layer |
+| `position` | `Vec2` | Pixel position in the world |
+| `grid_position` | `IVec2` | Grid position within the layer |
+| `size` | `Vec2` | Entity size in pixels |
+| `pivot` | `Vec2` | Pivot point (0.0–1.0) |
+| `tags` | `Vec<String>` | LDtk entity tags |
+| `tile` | `Option<LdtkTileMetadata>` | Optional visual tile of the entity |
+| `field_values` | `HashMap<String, LdtkFieldValue>` | All custom fields |
 
-### Field-Zugriff
+### Field access
 
-`LdtkEntitySpawnContext` und `LdtkImportedEntity` implementieren beide `LdtkFieldAccess`:
+`LdtkEntitySpawnContext` and `LdtkImportedEntity` both implement `LdtkFieldAccess`:
 
 ```rust
 ctx.field("my_field")              // Option<&LdtkFieldValue>
@@ -362,22 +364,22 @@ pub enum LdtkFieldValue {
 
 ## Collision
 
-### Konfiguration
+### Configuration
 
 ```rust
 LdtkConfig::default()
-    // Alle Werte != 0 werden solid (Standard wenn keine Regeln gesetzt)
+    // These values become solid (default when no rules are set: every value != 0)
     .with_solid_int_grid_values([1, 2])
 
-    // Oder präzise Regeln pro Layer und Wert
+    // Or precise rules per layer and value
     .with_collision_rules([
         LdtkCollisionRule::solid(1).for_layer("Collision"),
         LdtkCollisionRule::sensor(2, "water").for_layer("Gameplay"),
-        LdtkCollisionRule::sensor(3, "damage"),  // gilt für alle Layer
+        LdtkCollisionRule::sensor(3, "damage"),  // applies to all layers
     ])
 ```
 
-### Zur Laufzeit auslesen
+### Reading at runtime
 
 ```rust
 fn build_colliders(
@@ -392,10 +394,10 @@ fn build_colliders(
 
         for cell in cells {
             if cell.solid {
-                // Rapier/Avian Collider erzeugen bei cell.grid_position
+                // Create a Rapier/Avian collider at cell.grid_position
             }
             if cell.sensor {
-                // Sensor-Trigger mit cell.tag erzeugen
+                // Create a sensor trigger with cell.tag
             }
         }
     }
@@ -404,38 +406,38 @@ fn build_colliders(
 
 ### LdtkCollisionCell
 
-| Feld | Typ | Beschreibung |
-|------|-----|--------------|
-| `level_identifier` | `String` | Level in dem die Zelle liegt |
-| `level_iid` | `String` | LDtk-IID des Levels |
-| `layer_identifier` | `String` | Layer-Name |
-| `grid_position` | `IVec2` | Gitter-Position |
-| `value` | `i32` | IntGrid-Wert |
-| `solid` | `bool` | Ist physikalisch solid |
-| `sensor` | `bool` | Ist Sensor/Trigger |
-| `tag` | `Option<String>` | Semantischer Tag (z.B. `"water"`) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `level_identifier` | `String` | Level containing the cell |
+| `level_iid` | `String` | LDtk IID of the level |
+| `layer_identifier` | `String` | Layer name |
+| `grid_position` | `IVec2` | Grid position |
+| `value` | `i32` | IntGrid value |
+| `solid` | `bool` | Physically solid |
+| `sensor` | `bool` | Sensor/trigger |
+| `tag` | `Option<String>` | Semantic tag (e.g. `"water"`) |
 
-Entities mit passender IntGrid-Zelle bekommen automatisch `LdtkCollider { solid, sensor }`.
+Entities whose IntGrid cell matched a rule automatically receive `LdtkCollider { solid, sensor }`.
 
 ---
 
-## Layer-Filter
+## Layer filters
 
 ```rust
-// Nur diese Layer in den Katalog aufnehmen
+// Only catalog these layers
 LdtkConfig::default().include_layers(["Collision", "Entities", "Gameplay"])
 
-// Diese Layer überspringen (kombinierbar mit include_layers)
+// Skip these layers (combinable with include_layers)
 LdtkConfig::default().exclude_layers(["Debug", "Notes", "Editor"])
 ```
 
-Gefilterte Layer erscheinen weder im `LdtkMapCatalog` noch werden ihre Entities oder Tiles verarbeitet.
+Filtered layers neither appear in the `LdtkMapCatalog` nor are their entities or tiles processed.
 
 ---
 
-## Tile-Animationen
+## Tile animations
 
-LDtk hat keine native Tile-Animation. Dieses Crate liest eine Konvention aus Tile Custom Data:
+LDtk has no native tile animation. This crate reads a convention from tile custom data:
 
 ```
 anim=1,2,3;fps=8
@@ -443,14 +445,14 @@ frames=1@0.1,2@0.1,3@0.2;repeat=false
 ```
 
 **Format:**
-- `anim=<ids>` oder `frames=<ids>`: Komma-getrennte Tile-IDs
-- `fps=<n>`: Frames pro Sekunde (einheitliche Dauer)
-- `<id>@<sekunden>`: Individuelle Dauer pro Frame
-- `repeat=false`: Animation stoppt beim letzten Frame (Standard: `true`)
+- `anim=<ids>` or `frames=<ids>`: comma-separated tile IDs
+- `fps=<n>`: frames per second (uniform duration)
+- `<id>@<seconds>`: individual duration per frame
+- `repeat=false`: animation holds the last frame (default: `true`)
 
-Gefundene Animationen stehen in `LdtkMapCatalog::tile_animations` und `LdtkTileMetadata::animation`. `LdtkTileAnimator` tickt automatisch über `GameLdtkPlugin`.
+Discovered animations live in `LdtkMapCatalog::tile_animations` and `LdtkTileMetadata::animation`. `LdtkTileAnimator` ticks automatically via `GameLdtkPlugin`; non-repeating animations stop on their last frame.
 
-**Tilemap-Adapter** (experimentell, benötigt Feature `tilemap`):
+**Tilemap adapter** (experimental, requires the `tilemap` feature):
 
 ```rust
 app.insert_resource(LdtkLevelManagerConfig {
@@ -459,11 +461,11 @@ app.insert_resource(LdtkLevelManagerConfig {
 });
 ```
 
-Wendet laufende `LdtkTileAnimator`-Zustände auf `TileTextureIndex` von `bevy_ecs_tilemap` an. Muss mit einem echten LDtk-Testlevel verifiziert werden.
+Applies running `LdtkTileAnimator` state to `bevy_ecs_tilemap`'s `TileTextureIndex`.
 
 ---
 
-## Load-State und Validierung
+## Load state and validation
 
 ```rust
 fn debug_ldtk(
@@ -474,10 +476,10 @@ fn debug_ldtk(
         LdtkLoadStatus::NotLoaded => {}
         LdtkLoadStatus::Loading => {}
         LdtkLoadStatus::Ready => {
-            info!("{} Level(s) geladen", load.stats.levels);
+            info!("{} level(s) loaded", load.stats.levels);
         }
         LdtkLoadStatus::Error => {
-            error!("LDtk Fehler: {:?}", load.errors);
+            error!("LDtk error: {:?}", load.errors);
         }
     }
 
@@ -503,70 +505,69 @@ pub struct LdtkLoadStats {
 }
 ```
 
-### Validierungscodes
+### Validation codes
 
-| Code | Bedeutung |
-|------|-----------|
-| `external_level_not_cataloged` | Externes `.ldtkl` Level ohne Layer-Daten im Katalog |
-| `external_level_wasm_unsupported` | Externes Level auf WASM nicht lesbar |
-| `missing_spawn_point` | Level hat keinen Spawnpunkt |
-| `unregistered_entity` | LDtk-Entity hat kein registriertes Bundle/Spawner |
-| `missing_tileset_path` | Layer referenziert Tileset ohne Pfad |
-| `transition_level_missing` | Transition-Ziel nicht im Katalog |
-| `transition_spawn_missing` | Angeforderter Spawnpunkt nicht gefunden |
+| Code | Meaning |
+|------|---------|
+| `external_level_not_cataloged` | External `.ldtkl` level without layer data in the catalog |
+| `external_level_wasm_unsupported` | External level not readable on WASM |
+| `missing_spawn_point` | Level has no spawn point |
+| `unregistered_entity` | LDtk entity has no registered bundle/spawner |
+| `missing_tileset_path` | Layer references a tileset without a path |
+| `transition_level_missing` | Transition target not in the catalog |
+| `transition_spawn_missing` | Requested spawn point not found |
 
-`LdtkConfig::with_strict_validation()` stuft alle Codes als Errors ein und setzt `LdtkLoadStatus::Error`.
+`LdtkConfig::with_strict_validation()` treats every code as an error and sets `LdtkLoadStatus::Error`.
 
 ---
 
-## API-Referenz
+## API reference
 
-### Ressourcen
+### Resources
 
-| Ressource | Beschreibung |
-|-----------|--------------|
-| `LdtkConfig` | Konfiguration (World-Pfad, Collision, Filter, Validierung) |
-| `LdtkRuntimeState` | Aktive World, aktives Level, geladene Level-IIDs |
-| `LdtkLoadState` | Status (NotLoaded/Loading/Ready/Error), Statistiken, Warn-/Fehlerliste |
-| `LdtkValidationReport` | Strukturierte Warnings und Errors mit Code und Nachricht |
-| `LdtkMapCatalog` | Worlds, Level, Layer, Tilesets, Tiles, Spawnpoints, Entity-Snapshots, Tile-Animationen |
-| `LdtkCollisionCatalog` | IntGrid-Zellen mit Collision-Typ, Layer-Zusammenfassungen |
-| `LdtkEntityCatalog` | IID → Bevy-Entity-Zuordnung, Entity-Snapshots |
-| `LdtkEntityRegistry` | Registrierte Spawner/Bundles |
-| `LdtkExternalLevelSource` | Austauschbare I/O-Strategie für externe Level |
-| `LdtkCommandQueue` | Interne Command-Queue (nicht direkt nutzen) |
-| `CurrentLdtkLevel` | Aktuelles Level-Identifier + IID (LevelManagerPlugin) |
-| `PendingLdtkLevelTransition` | Laufende Transition (LevelManagerPlugin) |
-| `LevelTransitionState` | Status der Transition + Fehlermeldung (LevelManagerPlugin) |
-| `LdtkLevelManagerConfig` | Konfiguration des LevelManagerPlugins |
-| `LdtkPlayerLocator` | Explizite Player-Entity für Teleport (optional) |
+| Resource | Description |
+|----------|-------------|
+| `LdtkConfig` | Configuration (world path, collision, filters, validation) |
+| `LdtkRuntimeState` | Active world, active level, loaded level IIDs |
+| `LdtkLoadState` | Status (NotLoaded/Loading/Ready/Error), statistics, warning/error lists |
+| `LdtkValidationReport` | Structured warnings and errors with code and message |
+| `LdtkMapCatalog` | Worlds, levels, layers, tilesets, tiles, spawn points, entity snapshots, tile animations |
+| `LdtkCollisionCatalog` | IntGrid cells with collision type, per-layer summaries |
+| `LdtkEntityCatalog` | IID → Bevy entity mapping, entity snapshots |
+| `LdtkEntityRegistry` | Registered spawners/bundles |
+| `LdtkExternalLevelSource` | Pluggable IO strategy for external levels |
+| `LdtkCommandQueue` | Internal command queue (use `LdtkCommandExt` instead) |
+| `CurrentLdtkLevel` | Current level identifier + IID (LevelManagerPlugin) |
+| `PendingLdtkLevelTransition` | In-flight transition (LevelManagerPlugin) |
+| `LevelTransitionState` | Transition status + error message (LevelManagerPlugin) |
+| `LdtkLevelManagerConfig` | LevelManagerPlugin configuration |
+| `LdtkPlayerLocator` | Explicit player entity for teleporting (optional) |
 
-### Komponenten
+### Components
 
-| Komponente | Beschreibung |
-|------------|--------------|
-| `LdtkWorldRoot` | Markiert die Root-Entity der geladenen LDtk-World |
-| `LdtkEntityMarker` | Auf jeder gespawnten LDtk-Entity: Definition-ID, Level, World |
-| `LdtkImportedEntity` | Snapshot aller LDtk-Felder auf der Bevy-Entity |
-| `LdtkCollider` | `{ solid: bool, sensor: bool }` — von Collision-Capture gesetzt |
-| `LdtkTileCollision` | Tile-spezifische Collision-Info |
-| `LdtkTileAnimation` | Animations-Frames + repeat-Flag |
-| `LdtkTileAnimator` | Laufender Animations-State (frame_index, timer) |
-| `LdtkPersistent` | Opt-in: Entity überlebt Levelwechsel |
-| `LdtkLevelPlayer` | Markiert Spieler-Entity für automatischen Teleport |
-| `LdtkLevelScoped` | Entity wird beim Verlassen des angegebenen Levels despawnt |
+| Component | Description |
+|-----------|-------------|
+| `LdtkWorldRoot` | Marks the root entity of the loaded LDtk world |
+| `LdtkEntityMarker` | On every spawned LDtk entity: definition ID, level, world |
+| `LdtkImportedEntity` | Snapshot of all LDtk fields on the Bevy entity |
+| `LdtkCollider` | `{ solid: bool, sensor: bool }` — set by the collision capture |
+| `LdtkTileAnimation` | Animation frames + repeat flag |
+| `LdtkTileAnimator` | Running animation state (frame_index, timer) |
+| `LdtkPersistent` | Opt-in: entity survives level switches |
+| `LdtkLevelPlayer` | Marks the player entity for automatic teleporting |
+| `LdtkLevelScoped` | Entity is despawned when the given level is left |
 
-### System Sets (Reihenfolge)
+### System sets (in order)
 
 ```
-LdtkLoadSet::Commands       ← process_ldtk_commands
-LdtkLoadSet::Catalog        ← refresh_map_catalog, sync_level_events
-LdtkLoadSet::Capture        ← collision, entity_instances, entity_behaviors
+LdtkLoadSet::Commands         ← process_ldtk_commands
+LdtkLoadSet::Catalog          ← refresh_map_catalog, sync_level_events
+LdtkLoadSet::Capture          ← collision, entity_instances, entity_behaviors
 LdtkLoadSet::LevelTransitions ← handle_requests, finalize_transition
-LdtkLoadSet::Animation      ← tile_animators
+LdtkLoadSet::Animation        ← tile_animators
 ```
 
-Eigene Systeme können relativ zu diesen Sets geordnet werden:
+Your own systems can be ordered relative to these sets:
 
 ```rust
 app.add_systems(Update,
@@ -574,25 +575,30 @@ app.add_systems(Update,
 );
 ```
 
-### LdtkMapCatalog — wichtige Methoden
+### LdtkMapCatalog — key methods
 
 ```rust
-// Level per Identifier oder IID nachschlagen (O(1))
+// Look up a level by identifier or IID (O(1))
 catalog.level_by_id_or_iid("Level_01")
 catalog.level_by_id_or_iid("abc-123-iid")
 
-// IID → Identifier (O(1))
+// IID → identifier (O(1))
 catalog.identifier_for_iid("abc-123-iid")
 
-// Manuell einfügen (hält IID-Index synchron)
+// Entity snapshot by instance IID (O(1))
+catalog.entity_snapshot_by_iid("entity-iid")
+
+// Manual insertion (keeps the secondary indexes in sync)
 catalog.insert_level_info(level_info)
 
 catalog.is_empty()
 ```
 
-### Externe Level-Quelle austauschen
+Note: `LdtkMapCatalog::layers` is keyed by layer instance **IID** — layer identifiers are not unique across levels.
 
-Für WASM oder eigenes I/O:
+### Swapping the external level source
+
+For WASM or custom IO:
 
 ```rust
 use ldtk_integration::{ExternalLevelSource, LdtkExternalLevelSource};
@@ -601,7 +607,7 @@ struct MyLevelSource;
 
 impl ExternalLevelSource for MyLevelSource {
     fn load(&self, asset_root: &str, world_path: &str, rel_path: &str) -> Option<String> {
-        // Eigene Logik: HTTP-Fetch, eingebettete Bytes, etc.
+        // Your logic: HTTP fetch, embedded bytes, etc.
         None
     }
 }
@@ -611,32 +617,52 @@ app.insert_resource(LdtkExternalLevelSource(Some(Box::new(MyLevelSource))));
 
 ---
 
-## Beispiel
+## Examples
 
-`examples/stealth_doors.rs` zeigt ein vollständiges Setup für ein Stealth-Puzzle-Game:
+### `examples/basic_transitions.rs`
 
-- `GameLdtkPlugin` mit Collision-Regeln
-- `LevelManagerPlugin` mit Spieler-Teleport
-- `Door`-Entity aus LDtk-Feldern spawnen (`target_level`, `target_spawn`)
-- Level-Transition beim Betreten einer Tür auslösen
-- Events auswerten (`LdtkLevelReadyEvent`, `LdtkCollisionReadyEvent`)
-- Transition-Fehler loggen
+Minimal setup: loads the bundled `assets/worlds/AutoLayers_5_Advanced.ldtk` sample and chains two level transitions.
+
+```
+cargo run --example basic_transitions
+```
+
+### `examples/stealth_doors.rs`
+
+Full setup for a stealth-puzzle game:
+
+- `GameLdtkPlugin` with collision rules
+- `LevelManagerPlugin` with player teleporting
+- Spawning a `Door` entity from LDtk fields (`target_level`, `target_spawn`)
+- Triggering a level transition when entering a door
+- Consuming events (`LdtkLevelReadyEvent`, `LdtkCollisionReadyEvent`)
+- Logging transition failures
 
 ```
 cargo run --example stealth_doors
 ```
 
-Das Beispiel benötigt eine `assets/worlds/stealth.ldtk`-Datei. Ohne sie startet die App, lädt aber keine Level — alle Events bleiben aus.
+The example expects a map at **`assets/worlds/stealth.ldtk`** with:
+
+| What | Requirement |
+|------|-------------|
+| Levels | at least **2** (doors need a target) |
+| Entity `Door` | string fields `target_level` (identifier of the target level) and `target_spawn` (spawn identifier there); give it an editor tile so it is visible |
+| Spawn points | a `PlayerSpawn` entity (or any entity tagged `spawn`) in **every** level |
+| IntGrid layer `Collision` | value **1** = wall (solid) |
+| IntGrid layer `Gameplay` | value **2** = vision zone (sensor, tag `vision_zone`) |
+
+Without the map the app starts, but no levels load and all events stay silent.
 
 ---
 
 ## Tests
 
 ```powershell
-cargo test                      # alle Unit-Tests
-cargo test --no-default-features  # ohne tilemap + fs (WASM-Pfad)
-cargo fmt                       # Formatierung
-cargo clippy --all-targets      # Lints
+cargo test                         # unit + integration tests (headless, no window)
+cargo test --no-default-features   # without tilemap + fs (WASM path)
+cargo fmt                          # formatting
+cargo clippy --all-targets         # lints
 ```
 
-Testabdeckung: Field-Helper, Layer-Filter, Tile-Animations-Parser, Tile-ID-Berechnung, Collision-Regeln, Spawnpunkt-Auflösung, Transition-State, Catalog-Index, Validierungslogik.
+Coverage: field helpers, layer filters, tile-animation parser (incl. non-repeat stop), tile-ID math, collision rules, spawn-point resolution, transition state, catalog indexes (levels and entities), registry resolve priority, validation logic, plus a headless end-to-end load test against the bundled sample world.

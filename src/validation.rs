@@ -3,7 +3,10 @@
 //! [`LdtkValidationReport`]. Severity routing (warning vs. error under
 //! `strict_validation`) lives entirely in [`LdtkValidationReport::push`].
 
-use crate::ldtk::core::{LdtkConfig, LdtkEntityRegistry, LdtkMapCatalog, LdtkValidationReport};
+use crate::catalog::LdtkMapCatalog;
+use crate::config::LdtkConfig;
+use crate::registry::LdtkEntityRegistry;
+use crate::state::LdtkValidationReport;
 
 pub(crate) fn validate_catalog(
     catalog: &LdtkMapCatalog,
@@ -88,7 +91,7 @@ pub(crate) fn validate_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ldtk::core::{LdtkLevelInfo, LdtkSpawnPoint};
+    use crate::catalog::{LdtkLevelInfo, LdtkSpawnPoint};
 
     #[test]
     fn missing_spawn_point_is_a_warning_unless_strict() {

@@ -24,10 +24,10 @@
 
 use bevy::prelude::*;
 use ldtk_integration::{
-    GameLdtkPlugin, LdtkAppExt, LdtkCollisionReadyEvent, LdtkCommandExt, LdtkConfig,
-    LdtkEntitySpawnContext, LdtkFieldAccess, LdtkLevelManagerConfig, LdtkLevelPlayer,
+    GameLdtkPlugin, LdtkAppExt, LdtkCollisionReadyEvent, LdtkCollisionRule, LdtkCommandExt,
+    LdtkConfig, LdtkEntitySpawnContext, LdtkFieldAccess, LdtkLevelManagerConfig, LdtkLevelPlayer,
     LdtkLevelReadyEvent, LdtkLoadState, LdtkMapLoadedEvent, LevelManagerPlugin,
-    LevelTransitionState, LevelTransitionStatus, LdtkCollisionRule,
+    LevelTransitionState, LevelTransitionStatus,
 };
 
 fn main() {
@@ -126,10 +126,7 @@ fn spawn_door(world: &mut World, entity: Entity, ctx: &LdtkEntitySpawnContext) {
 // ── Update systems ─────────────────────────────────────────────────────────────
 
 /// Reacts to the LDtk world finishing its initial load and logs statistics.
-fn on_map_loaded(
-    mut events: MessageReader<LdtkMapLoadedEvent>,
-    load_state: Res<LdtkLoadState>,
-) {
+fn on_map_loaded(mut events: MessageReader<LdtkMapLoadedEvent>, load_state: Res<LdtkLoadState>) {
     for event in events.read() {
         info!(
             "LDtk world '{}' loaded — {} level(s), {} layers, {} tilesets",
@@ -211,9 +208,9 @@ fn handle_door_interaction(
 /// Logs an error whenever a level transition fails (unknown level identifier
 /// or missing spawn point).
 fn log_transition_failures(state: Res<LevelTransitionState>) {
-    if state.is_changed() {
-        if let (LevelTransitionStatus::Failed, Some(error)) = (&state.status, &state.error) {
-            error!("Level transition failed: {}", error);
-        }
+    if state.is_changed()
+        && let (LevelTransitionStatus::Failed, Some(error)) = (&state.status, &state.error)
+    {
+        error!("Level transition failed: {}", error);
     }
 }

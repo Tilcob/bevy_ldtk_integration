@@ -1,24 +1,23 @@
 [package]
-name = "ldtk_integration"
+name = "bevy_ldtk_integration"
 version = "0.1.0"
 edition = "2024"
 description = "A Bevy plugin for LDtk level loading: world catalog, entity registration, collision, and level transitions."
 license = "MIT OR Apache-2.0"
 authors = ["Jakob Dorninger"]
-repository = "https://github.com/jakobdorninger/ldtk_integration"
+repository = "https://github.com/Tilcob/ldtk_integration"
 keywords = ["bevy", "ldtk", "gamedev", "2d", "levels"]
 categories = ["game-engines"]
 readme = "README.md"
 exclude = ["assets/", ".idea/"]
 
+# The library target keeps the historical name `ldtk_integration` so existing
+# consumers (`use ldtk_integration::...`) stay source-compatible with the
+# package rename. Depend on it via:
+#   ldtk_integration = { package = "bevy_ldtk_integration", ... }
 [lib]
 name = "ldtk_integration"
 path = "src/lib.rs"
-
-# The demo binary is kept for local testing and is not part of the library.
-[[bin]]
-name = "ldtk_demo"
-path = "src/main.rs"
 
 [dependencies]
 bevy = "0.18.1"

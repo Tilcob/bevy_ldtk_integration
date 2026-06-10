@@ -1,19 +1,17 @@
+//! [`LevelManagerPlugin`]: level transitions with spawn-point resolution,
+//! player teleport, and per-level entity cleanup.
+
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_ecs_ldtk::prelude::{LevelEvent, LevelSelection};
-#[cfg(feature = "tilemap")]
-use bevy_ecs_tilemap::prelude::{TilePos, TileTextureIndex, TilemapId};
-#[cfg(feature = "tilemap")]
-use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::ldtk::core::{
-    LdtkCollisionCatalog, LdtkConfig, LdtkEntityMarker, LdtkLoadSet, LdtkLoadState, LdtkLoadStatus,
-    LdtkMapCatalog, LdtkPersistent, LdtkRuntimeState, LdtkSpawnPoint, LdtkTileAnimator,
-    LdtkValidationReport,
-};
-#[cfg(feature = "tilemap")]
-use crate::ldtk::core::{LdtkLayerInfo, LdtkLevelInfo, LdtkTileAnimation};
+use crate::catalog::{LdtkCollisionCatalog, LdtkMapCatalog, LdtkSpawnPoint};
+use crate::components::LdtkPersistent;
+use crate::config::LdtkConfig;
+use crate::entities::LdtkEntityMarker;
+use crate::plugin::LdtkLoadSet;
+use crate::state::{LdtkLoadState, LdtkLoadStatus, LdtkRuntimeState, LdtkValidationReport};
 
 pub struct LevelManagerPlugin;
 
@@ -46,19 +44,7 @@ impl Plugin for LevelManagerPlugin {
             );
 
         #[cfg(feature = "tilemap")]
-        {
-            app.init_resource::<LdtkTileAnimationLookup>().add_systems(
-                Update,
-                (
-                    rebuild_tile_animation_lookup,
-                    attach_tile_animators_to_tiles,
-                    apply_tile_animation_to_tilemap,
-                )
-                    .chain()
-                    .in_set(LdtkLoadSet::Animation)
-                    .run_if(resource_exists::<LdtkMapCatalog>),
-            );
-        }
+        crate::tilemap_adapter::register(app);
     }
 }
 
@@ -77,11 +63,16 @@ fn check_loader_dependency(runtime: Option<Res<'_, LdtkRuntimeState>>) {
     }
 }
 
+/// Configuration for [`LevelManagerPlugin`].
 #[derive(Debug, Clone, Resource)]
 pub struct LdtkLevelManagerConfig {
+    /// Tag used to find the default spawn point when no `spawn_id` is given.
     pub default_spawn_tag: String,
+    /// Entity identifier used to find the default spawn point when no `spawn_id` is given.
     pub default_spawn_identifier: String,
+    /// Enables the experimental `bevy_ecs_tilemap` tile-animation adapter.
     pub enable_tile_animation_adapter: bool,
+    /// When `true`, a missing spawn point falls back to `Vec2::ZERO` instead of failing.
     pub allow_missing_spawnpoints: bool,
 }
 
@@ -96,78 +87,99 @@ impl Default for LdtkLevelManagerConfig {
     }
 }
 
+/// Optional resource that pins the exact player entity to teleport; overrides
+/// the [`LdtkLevelPlayer`] marker search when set.
 #[derive(Debug, Clone, Resource, Default)]
 pub struct LdtkPlayerLocator {
+    /// The player entity to teleport, if explicitly chosen.
     pub entity: Option<Entity>,
 }
 
+/// Resource describing the currently active level after a finished transition.
 #[derive(Debug, Clone, Resource, Default)]
 pub struct CurrentLdtkLevel {
+    /// LDtk identifier of the active level.
     pub identifier: Option<String>,
+    /// LDtk IID of the active level.
     pub iid: Option<String>,
 }
 
+/// Resource describing the transition that is currently in flight.
 #[derive(Debug, Clone, Resource, Default)]
 pub struct PendingLdtkLevelTransition {
+    /// Identifier of the level being transitioned to.
     pub target_level: Option<String>,
+    /// Requested spawn point identifier or tag, if any.
     pub spawn_id: Option<String>,
+    /// Resolved IID of the target level.
     pub target_level_iid: Option<String>,
 }
 
+/// Phase of a level transition managed by [`LevelManagerPlugin`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LevelTransitionStatus {
+    /// No transition is in progress.
     #[default]
     Idle,
+    /// Waiting for the target level to spawn.
     WaitingForSpawn,
+    /// The transition completed and the player was placed.
     Ready,
+    /// The transition failed; see [`LevelTransitionState::error`].
     Failed,
 }
 
+/// Resource exposing the current transition phase and error, for UI such as
+/// loading screens.
 #[derive(Debug, Clone, Resource, Default)]
 pub struct LevelTransitionState {
+    /// Current phase.
     pub status: LevelTransitionStatus,
+    /// Human-readable error for the [`LevelTransitionStatus::Failed`] phase.
     pub error: Option<String>,
 }
 
+/// Message that requests a level transition; usually emitted via
+/// [`LdtkCommandExt::transition_to_ldtk_level`](crate::LdtkCommandExt::transition_to_ldtk_level).
 #[derive(Debug, Clone, Message)]
 pub struct LevelTransitionRequest {
+    /// LDtk identifier (or IID) of the level to switch to.
     pub target_level: String,
+    /// Spawn point identifier or tag; `None` resolves the configured default.
     pub spawn_id: Option<String>,
 }
 
+/// Message emitted once a transition finished and the player has been placed.
 #[derive(Debug, Clone, Message)]
 pub struct LdtkLevelReadyEvent {
+    /// Identifier of the now-active level.
     pub level_identifier: String,
+    /// Spawn id that was requested, if any.
     pub spawn_id: Option<String>,
+    /// World-space position the player was teleported to.
     pub position: Vec2,
 }
 
+/// Message emitted alongside [`LdtkLevelReadyEvent`] summarising the collision
+/// cells captured for the new level.
 #[derive(Debug, Clone, Message)]
 pub struct LdtkCollisionReadyEvent {
+    /// Identifier of the now-active level.
     pub level_identifier: String,
+    /// Number of collision cells captured for that level.
     pub cells: usize,
 }
 
+/// Marker for the player entity that [`LevelManagerPlugin`] teleports to the
+/// resolved spawn point after every transition.
 #[derive(Debug, Clone, Component, Default)]
 pub struct LdtkLevelPlayer;
 
+/// Scopes an entity to a level: it is despawned when that level is left.
 #[derive(Debug, Clone, Component)]
 pub struct LdtkLevelScoped {
+    /// Identifier of the level this entity belongs to.
     pub level_identifier: String,
-}
-
-#[cfg(feature = "tilemap")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct LdtkTileAnimationKey {
-    level_iid: String,
-    layer_iid: String,
-    grid_pos: IVec2,
-}
-
-#[cfg(feature = "tilemap")]
-#[derive(Debug, Clone, Resource, Default)]
-struct LdtkTileAnimationLookup {
-    by_tile: HashMap<LdtkTileAnimationKey, LdtkTileAnimation>,
 }
 
 #[derive(SystemParam)]
@@ -185,8 +197,8 @@ struct TransitionResources<'w> {
 }
 
 /// Auto-promotes the first level that `bevy_ecs_ldtk` spawns into a full level
-/// transition when nothing else has driven one yet (Bug 3). Without this, a
-/// world loaded via `LdtkConfig::with_world_asset_path(..)` — or a bare
+/// transition when nothing else has driven one yet. Without this, a world
+/// loaded via `LdtkConfig::with_world_asset_path(..)` — or a bare
 /// `change_ldtk_level(..)` — would render but never place the player, set
 /// `CurrentLdtkLevel`, or fire `LdtkLevelReadyEvent` / `LdtkCollisionReadyEvent`,
 /// so a single-level game would start with nothing wired up.
@@ -344,10 +356,10 @@ fn finalize_level_transition(
             cleanup_level_entities(&mut commands, &cleanup_query, old_identifier);
         }
 
-        // Capture the spawn id before clearing `pending` (Bug 4): the ready event
-        // below still needs it, but every `pending` field must be reset so a
-        // second `Spawned` event in the same frame (neighbor streaming) cannot
-        // re-match a stale `target_level_iid`/`spawn_id` and teleport twice.
+        // Capture the spawn id before clearing `pending`: the ready event below
+        // still needs it, but every `pending` field must be reset so a second
+        // `Spawned` event in the same frame (neighbor streaming) cannot re-match
+        // a stale `target_level_iid`/`spawn_id` and teleport twice.
         let spawn_id = resources.pending.spawn_id.clone();
         resources.current.identifier = Some(level_identifier.clone());
         resources.current.iid = Some(level_iid.clone());
@@ -360,8 +372,8 @@ fn finalize_level_transition(
 
         // Teleport the player to the resolved spawn point. Prefer the explicit
         // locator entity, fall back to the first `LdtkLevelPlayer`, and warn
-        // loudly if neither resolves to a live Transform (Bug 5) instead of
-        // silently leaving the player in place.
+        // loudly if neither resolves to a live Transform instead of silently
+        // leaving the player in place.
         let player_entity = locator
             .entity
             .filter(|&entity| transform_query.contains(entity))
@@ -455,7 +467,7 @@ fn resolve_spawn_point(
     if let Some(spawn_id) = spawn_id {
         // Identifier and tag matching are both case-insensitive so that
         // `transition_to_ldtk_level("L", Some("playerspawn"))` resolves
-        // `PlayerSpawn` regardless of casing (Bug 6).
+        // `PlayerSpawn` regardless of casing.
         let found = level.spawn_points.iter().find(|spawn| {
             spawn.identifier.eq_ignore_ascii_case(spawn_id)
                 || spawn
@@ -502,146 +514,53 @@ fn level_identifier_from_iid(catalog: &LdtkMapCatalog, iid: &str) -> Option<Stri
     catalog.identifier_for_iid(iid).map(ToOwned::to_owned)
 }
 
-#[cfg(feature = "tilemap")]
-fn rebuild_tile_animation_lookup(
-    catalog: Res<'_, LdtkMapCatalog>,
-    config: Res<'_, LdtkLevelManagerConfig>,
-    mut lookup: ResMut<'_, LdtkTileAnimationLookup>,
-) {
-    if !catalog.is_changed() || !config.enable_tile_animation_adapter {
-        return;
-    }
-
-    lookup.by_tile = build_tile_animation_lookup(&catalog.levels, &catalog.layers);
-}
-
-#[cfg(feature = "tilemap")]
-fn build_tile_animation_lookup(
-    levels: &HashMap<String, LdtkLevelInfo>,
-    layers: &HashMap<String, LdtkLayerInfo>,
-) -> HashMap<LdtkTileAnimationKey, LdtkTileAnimation> {
-    let mut lookup = HashMap::new();
-
-    for level in levels.values() {
-        for tile in &level.tiles {
-            let Some(animation) = tile.animation.clone() else {
-                continue;
-            };
-            let Some(layer) = layers.get(&tile.layer_iid) else {
-                continue;
-            };
-            if layer.grid_size <= 0 {
-                continue;
-            }
-
-            let grid_pos = IVec2::new(
-                tile.layer_position.x / layer.grid_size,
-                tile.layer_position.y / layer.grid_size,
-            );
-
-            let key = LdtkTileAnimationKey {
-                level_iid: level.iid.clone(),
-                layer_iid: tile.layer_iid.clone(),
-                grid_pos,
-            };
-            lookup.insert(key, animation.clone());
-        }
-    }
-
-    lookup
-}
-
-#[cfg(feature = "tilemap")]
-fn attach_tile_animators_to_tiles(
-    mut commands: Commands<'_, '_>,
-    lookup: Res<'_, LdtkTileAnimationLookup>,
-    config: Res<'_, LdtkLevelManagerConfig>,
-    catalog: Res<'_, LdtkMapCatalog>,
-    mut tile_query: Query<
-        '_,
-        '_,
-        (Entity, &TilePos, &TilemapId, &mut TileTextureIndex),
-        Without<LdtkTileAnimator>,
-    >,
-    layer_query: Query<'_, '_, &bevy_ecs_ldtk::prelude::LayerMetadata>,
-) {
-    if lookup.by_tile.is_empty() || !config.enable_tile_animation_adapter {
-        return;
-    }
-
-    for (entity, pos, tilemap_id, mut texture_index) in tile_query.iter_mut() {
-        let Ok(layer_meta) = layer_query.get(tilemap_id.0) else {
-            continue;
-        };
-        let level_iid = resolve_level_iid_from_metadata(&catalog, &layer_meta.level_id.to_string());
-        let key = LdtkTileAnimationKey {
-            level_iid,
-            layer_iid: layer_meta.iid.clone(),
-            grid_pos: IVec2::new(pos.x as i32, pos.y as i32),
-        };
-        let Some(animation) = lookup.by_tile.get(&key) else {
-            continue;
-        };
-        if let Some(first) = animation.frames.first() {
-            texture_index.0 = first.tile_id as u32;
-        }
-        commands
-            .entity(entity)
-            .insert(LdtkTileAnimator::new(animation.clone()));
-    }
-}
-
-#[cfg(feature = "tilemap")]
-fn resolve_level_iid_from_metadata(catalog: &LdtkMapCatalog, level_id: &str) -> String {
-    // `level_id` may already be an iid, or an identifier we need to translate.
-    catalog
-        .level_by_id_or_iid(level_id)
-        .map(|level| level.iid.clone())
-        .unwrap_or_else(|| level_id.to_string())
-}
-
-#[cfg(feature = "tilemap")]
-fn apply_tile_animation_to_tilemap(
-    mut query: Query<'_, '_, (&LdtkTileAnimator, &mut TileTextureIndex)>,
-) {
-    for (animator, mut texture_index) in query.iter_mut() {
-        let Some(frame) = animator.animation.frames.get(animator.frame_index) else {
-            continue;
-        };
-        texture_index.0 = frame.tile_id as u32;
-    }
-}
-
-pub fn advance_tile_animation(animator: &mut LdtkTileAnimator, delta: Duration) -> Option<i32> {
+/// Advances `animator` by `delta`, returning the new tile id when the frame
+/// changed. Thin wrapper around [`LdtkTileAnimator::advance`] kept for backwards
+/// compatibility.
+pub fn advance_tile_animation(
+    animator: &mut crate::animation::LdtkTileAnimator,
+    delta: Duration,
+) -> Option<i32> {
     animator.advance(delta)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ldtk::core::{LdtkLevelInfo, LdtkTileAnimation};
+    use crate::catalog::LdtkLevelInfo;
 
     fn build_catalog_with_spawnpoints() -> LdtkMapCatalog {
         let mut catalog = LdtkMapCatalog::default();
-        let mut level = LdtkLevelInfo::default();
-        level.identifier = "Level_A".to_string();
-        level.spawn_points = vec![
-            LdtkSpawnPoint {
-                identifier: "PlayerSpawn".to_string(),
-                position: Vec2::new(10.0, 20.0),
-                tags: vec!["PlayerSpawn".to_string()],
-                level_identifier: "Level_A".to_string(),
-                layer_identifier: "Entities".to_string(),
-            },
-            LdtkSpawnPoint {
-                identifier: "Alt".to_string(),
-                position: Vec2::new(30.0, 40.0),
-                tags: vec!["Alt".to_string()],
-                level_identifier: "Level_A".to_string(),
-                layer_identifier: "Entities".to_string(),
-            },
-        ];
+        let level = LdtkLevelInfo {
+            identifier: "Level_A".to_string(),
+            spawn_points: vec![
+                LdtkSpawnPoint {
+                    identifier: "PlayerSpawn".to_string(),
+                    position: Vec2::new(10.0, 20.0),
+                    tags: vec!["PlayerSpawn".to_string()],
+                    level_identifier: "Level_A".to_string(),
+                    layer_identifier: "Entities".to_string(),
+                },
+                LdtkSpawnPoint {
+                    identifier: "Alt".to_string(),
+                    position: Vec2::new(30.0, 40.0),
+                    tags: vec!["Alt".to_string()],
+                    level_identifier: "Level_A".to_string(),
+                    layer_identifier: "Entities".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
         catalog.insert_level_info(level);
+        catalog
+    }
+
+    fn empty_level_catalog() -> LdtkMapCatalog {
+        let mut catalog = LdtkMapCatalog::default();
+        catalog.insert_level_info(LdtkLevelInfo {
+            identifier: "Level_A".to_string(),
+            ..Default::default()
+        });
         catalog
     }
 
@@ -661,7 +580,7 @@ mod tests {
         let catalog = build_catalog_with_spawnpoints();
         let config = LdtkLevelManagerConfig::default();
 
-        // Lower-case query must resolve the `PlayerSpawn` identifier (Bug 6).
+        // Lower-case query must resolve the `PlayerSpawn` identifier.
         let spawn = resolve_spawn_point(&catalog, "Level_A", Some("playerspawn"), &config)
             .expect("spawnpoint");
         assert_eq!(spawn.identifier, "PlayerSpawn");
@@ -684,10 +603,7 @@ mod tests {
 
     #[test]
     fn missing_spawnpoint_returns_error() {
-        let mut catalog = LdtkMapCatalog::default();
-        let mut level = LdtkLevelInfo::default();
-        level.identifier = "Level_A".to_string();
-        catalog.insert_level_info(level);
+        let catalog = empty_level_catalog();
 
         let result = resolve_spawn_point(
             &catalog,
@@ -697,28 +613,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn advances_tile_animation_state() {
-        let animation = LdtkTileAnimation {
-            frames: vec![
-                crate::ldtk::core::LdtkTileAnimationFrame {
-                    tile_id: 1,
-                    duration: 0.05,
-                },
-                crate::ldtk::core::LdtkTileAnimationFrame {
-                    tile_id: 2,
-                    duration: 0.05,
-                },
-            ],
-            repeat: true,
-        };
-        let mut animator = LdtkTileAnimator::new(animation);
-
-        let frame = advance_tile_animation(&mut animator, Duration::from_millis(60));
-
-        assert_eq!(frame, Some(2));
     }
 
     #[test]
@@ -791,13 +685,12 @@ mod tests {
 
     #[test]
     fn allows_fallback_spawnpoint_when_enabled() {
-        let mut catalog = LdtkMapCatalog::default();
-        let mut level = LdtkLevelInfo::default();
-        level.identifier = "Level_A".to_string();
-        catalog.insert_level_info(level);
+        let catalog = empty_level_catalog();
 
-        let mut config = LdtkLevelManagerConfig::default();
-        config.allow_missing_spawnpoints = true;
+        let config = LdtkLevelManagerConfig {
+            allow_missing_spawnpoints: true,
+            ..Default::default()
+        };
         let spawn = resolve_spawn_point(&catalog, "Level_A", None, &config).expect("fallback");
 
         assert_eq!(spawn.identifier, "Fallback");
